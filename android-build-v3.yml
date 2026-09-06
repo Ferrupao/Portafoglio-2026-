@@ -1,0 +1,52 @@
+name: Build Portafoglio 2026 V3
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/android-build-v3.yml"
+      - "portafoglio-v3.zip"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Extract V3 project
+        run: |
+          rm -rf android-project-v3
+          mkdir android-project-v3
+          unzip -q portafoglio-v3.zip -d android-project-v3
+
+      - name: Build V3 APK
+        working-directory: android-project-v3
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload V3 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3-APK
+          path: android-project-v3/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
