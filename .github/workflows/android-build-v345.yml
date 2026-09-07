@@ -1,0 +1,52 @@
+name: Build Portafoglio 2026 V3.4.5 Personale
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/android-build-v345.yml"
+      - "portafoglio-v345-personale.zip"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Extract V3.4.5 personal project
+        run: |
+          rm -rf android-project-v345
+          mkdir android-project-v345
+          unzip -q portafoglio-v345-personale.zip -d android-project-v345
+
+      - name: Build V3.4.5 personal APK
+        working-directory: android-project-v345
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload V3.4.5 personal APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V345-PERSONALE-APK
+          path: android-project-v345/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
