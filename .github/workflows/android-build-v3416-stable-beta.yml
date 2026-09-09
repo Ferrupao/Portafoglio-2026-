@@ -1,0 +1,96 @@
+name: Build Portafoglio 2026 V3.4.16 Stable Beta
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/android-build-v3416-stable-beta.yml"
+      - "portafoglio-v3416-stable-beta.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE" || (echo "Missing PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE" && exit 1)
+          test -n "$STORE_PASSWORD" || (echo "Missing PORTAFOGLIO_KEYSTORE_PASSWORD" && exit 1)
+          test -n "$KEY_ALIAS" || (echo "Missing PORTAFOGLIO_KEY_ALIAS" && exit 1)
+          test -n "$KEY_PASSWORD" || (echo "Missing PORTAFOGLIO_KEY_PASSWORD" && exit 1)
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback             --passphrase "$GPG_PASSPHRASE"             --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12"             --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+          keytool -list -storetype PKCS12             -keystore "$GITHUB_WORKSPACE/portafoglio2026-release.p12"             -storepass "$STORE_PASSWORD" >/dev/null
+
+      - name: Extract V3.4.16 Stable Beta project
+        run: |
+          rm -rf android-project-v3416
+          mkdir android-project-v3416
+          unzip -q portafoglio-v3416-stable-beta.zip -d android-project-v3416
+
+      - name: Verify V3.4.16 metadata
+        run: |
+          grep -q 'applicationId "it.portafoglio2026.v32"' android-project-v3416/app/build.gradle
+          grep -q 'versionCode 58' android-project-v3416/app/build.gradle
+          grep -q 'versionName "3.4.16"' android-project-v3416/app/build.gradle
+          grep -q 'PORTAFOGLIO2026_V3416;7' android-project-v3416/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          grep -q 'PAC mensile complessivo' android-project-v3416/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          grep -q 'hasCumulativeIncomeCoveringMonthActive' android-project-v3416/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
+
+      - name: Build signed V3.4.16 release APK
+        working-directory: android-project-v3416
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed APK
+        run: |
+          test -f android-project-v3416/app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs android-project-v3416/app/build/outputs/apk/release/app-release.apk
+
+      - name: Upload signed Stable Beta APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3416-STABLE-BETA-SIGNED-APK
+          path: android-project-v3416/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
