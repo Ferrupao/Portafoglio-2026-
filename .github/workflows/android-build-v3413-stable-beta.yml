@@ -50,9 +50,19 @@ jobs:
       - name: Restore permanent signing key
         env:
           KEYSTORE_B64: ${{ secrets.PORTAFOGLIO_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
         run: |
-          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+          RAW="$KEYSTORE_B64"
+          if [[ "$RAW" == PORTAFOGLIO_KEYSTORE_BASE64=* ]]; then
+            RAW="${RAW#PORTAFOGLIO_KEYSTORE_BASE64=}"
+          fi
+          CLEAN="$(printf '%s' "$RAW" | tr -d '[:space:]')"
+          printf '%s' "$CLEAN" | base64 --decode > "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+          test -s "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
           chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+          keytool -list -storetype PKCS12 \
+            -keystore "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            -storepass "$STORE_PASSWORD" >/dev/null
 
       - name: Extract V3.4.13 Stable Beta project
         run: |
