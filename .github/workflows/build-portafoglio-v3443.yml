@@ -1,0 +1,126 @@
+name: Build Portafoglio 2026 V3.4.43 DEV
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3443.yml"
+      - "portafoglio-v3443-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE" || (echo "Missing PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE" && exit 1)
+          test -n "$STORE_PASSWORD" || (echo "Missing PORTAFOGLIO_KEYSTORE_PASSWORD" && exit 1)
+          test -n "$KEY_ALIAS" || (echo "Missing PORTAFOGLIO_KEY_ALIAS" && exit 1)
+          test -n "$KEY_PASSWORD" || (echo "Missing PORTAFOGLIO_KEY_PASSWORD" && exit 1)
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+          keytool -list -storetype PKCS12 \
+            -keystore "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            -storepass "$STORE_PASSWORD" >/dev/null
+
+      - name: Extract V3.4.43 DEV project
+        run: |
+          rm -rf android-project-v3443
+          mkdir android-project-v3443
+          unzip -q "portafoglio-v3443-dev.zip" -d android-project-v3443
+
+      - name: Verify V3.4.43 DEV source
+        run: |
+          set -e
+          MAIN="android-project-v3443/app/src/main/java/it/portafoglio2026/v3/MainActivity.java"
+          DB="android-project-v3443/app/src/main/java/it/portafoglio2026/v3/DbHelper.java"
+          GRADLE="android-project-v3443/app/build.gradle"
+          grep -Fq 'applicationId "it.portafoglio2026.v32"' "$GRADLE"
+          grep -Fq 'versionCode 85' "$GRADLE"
+          grep -Fq 'versionName "3.4.43-dev"' "$GRADLE"
+          grep -Fq 'DB_VERSION = 16' "$DB"
+          grep -Fq 'PORTAFOGLIO2026_V3443;16' "$MAIN"
+          grep -Fq 'if(oldVersion < 16)' "$DB"
+          grep -Fq 'annual_portfolio_history' "$DB"
+          grep -Fq 'externalFlowStatsYear(String broker,int year)' "$DB"
+          grep -Fq 'hasAnnualBrokerEconomicData' "$DB"
+          grep -Fq 'annualPerformanceBase' "$MAIN"
+          grep -Fq 'annualBrokerPerformanceBase' "$MAIN"
+          grep -Fq 'Rendimento annuale: ' "$MAIN"
+          grep -Fq 'flussi neutralizzati' "$MAIN"
+          grep -Fq 'Titoli a fine anno: —' "$MAIN"
+          grep -Fq 'Liquidità a fine anno: —' "$MAIN"
+          grep -Fq 'l’app non inventa la ripartizione' "$MAIN"
+          grep -Fq 'Ripartizione per portafoglio: dati storici non disponibili' "$MAIN"
+          grep -Fq 'Ricalcola automaticamente' "$MAIN"
+          grep -Fq 'Dividendi e cedole incassati' "$MAIN"
+          grep -Fq 'Risultato complessivo' "$MAIN"
+          grep -Fq 'DA CHIUDERE' "$MAIN"
+          grep -Fq 'IN CORSO' "$MAIN"
+          grep -Fq 'CHIUSO' "$MAIN"
+          ! grep -Fq 'Flussi esterni: DA INSERIRE / VERIFICARE' "$MAIN"
+          ! grep -Fq '＋ Aggiungi / modifica dati annuali' "$MAIN"
+          test -f android-project-v3443/ROADMAP-V3.4.19-AGGIORNATA.md
+          test -f android-project-v3443/source_model.json
+
+      - name: Build signed V3.4.43 DEV APK
+        working-directory: android-project-v3443
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed APK
+        run: |
+          test -f android-project-v3443/app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs android-project-v3443/app/build/outputs/apk/release/app-release.apk
+
+      - name: Upload signed DEV APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3443-DEV-SIGNED-APK
+          path: android-project-v3443/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
