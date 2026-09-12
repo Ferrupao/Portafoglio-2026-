@@ -79,31 +79,29 @@ jobs:
           grep -q 'PORTAFOGLIO2026_V3442;16' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
           grep -q 'if(oldVersion < 16)' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
           grep -q 'annual_portfolio_history' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
-          grep -q 'sumGrossIncomeYearActive' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
-          grep -q 'saveAnnualPortfolioHistory' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
-          grep -q 'sumExternalDepositsYear' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
-          grep -q 'sumExternalWithdrawalsYear' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
           grep -q 'sumNetIncomeYearActive' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
+          grep -q 'sumRealizedLossYearActive' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
+          grep -q 'sumFiscalRecoveryYearActive' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
+          grep -q 'yearEndBreakdown' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
           grep -q 'sumAdditionalTaxesYearActive' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
-          grep -q 'Dividendi e cedole incassati' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
-          grep -q 'Flussi esterni: DA INSERIRE / VERIFICARE' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
-          grep -q 'non vengono più dedotti dalla differenza patrimoniale' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
-          grep -q 'Inserisci versamenti/aumenti di capitale e prelievi reali' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
-          grep -q 'externalFlowStatsYear' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
-          grep -q 'sumKnownTaxesYearActive' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
-          grep -q 'Versamenti / aumenti capitale' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
-          grep -q 'Risultato patrimoniale al netto dei flussi' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
-          grep -q 'Variazione patrimonio' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
-          grep -q 'non è il rendimento' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
-          grep -q 'Risultato dopo perdita/minus' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
-          grep -q 'annualStatusLabel' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
-          grep -q 'DA CHIUDERE' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
-          grep -q 'TOTALE • tutti i portafogli' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          grep -q 'Resoconto annuale • automatico' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          grep -q 'Titoli a fine anno' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          grep -q 'Liquidità a fine anno' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          grep -q 'Patrimonio totale' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          grep -q 'Ricalcola automaticamente' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          grep -q 'annualReturnFromResult' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          grep -q 'syncAnnualTotalRow' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
           grep -q 'syncAnnualPortfolioRows' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
-          grep -q 'annualReturnFromCapitals' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
-          grep -q 'addLabeledField' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          grep -q 'DA CHIUDERE' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          grep -q 'IN CORSO' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          grep -q 'CHIUSO' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          grep -q 'TOTALE • tutti i portafogli' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          grep -q 'Dividendi e cedole incassati' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          grep -q 'Risultato dopo perdita/minus' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
           grep -q 'Chiudi anno' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
           grep -q 'Riapri anno' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          ! grep -q '＋ Aggiungi / modifica dati annuali' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          ! grep -q 'Flussi esterni: DA INSERIRE / VERIFICARE' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
           grep -q 'maybeAutoRefreshQuotes' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
           grep -q 'Borsa Italiana / Euronext • BID' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
           grep -q 'historyMonthFinanceText' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
