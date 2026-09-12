@@ -76,7 +76,7 @@ jobs:
           grep -q 'versionCode 84' android-project-v3442/app/build.gradle
           grep -q 'versionName "3.4.42-dev"' android-project-v3442/app/build.gradle
           grep -q 'DB_VERSION = 16' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
-          grep -q 'PORTAFOGLIO2026_V3442;15' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          grep -q 'PORTAFOGLIO2026_V3442;16' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
           grep -q 'if(oldVersion < 16)' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
           grep -q 'annual_portfolio_history' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
           grep -q 'sumGrossIncomeYearActive' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
@@ -92,10 +92,10 @@ jobs:
           grep -q 'externalFlowStatsYear' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
           grep -q 'sumKnownTaxesYearActive' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
           grep -q 'Versamenti / aumenti capitale' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
-          grep -q 'Risultato investimenti' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          grep -q 'Risultato patrimoniale al netto dei flussi' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
           grep -q 'Variazione patrimonio' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
           grep -q 'non è il rendimento' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
-          grep -q 'Risultato dopo minus' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+          grep -q 'Risultato dopo perdita/minus' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
           grep -q 'annualStatusLabel' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
           grep -q 'DA CHIUDERE' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
           grep -q 'TOTALE • tutti i portafogli' android-project-v3442/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
