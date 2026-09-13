@@ -1,0 +1,268 @@
+name: Build Portafoglio 2026 V3.4.48 DEV Safe Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3448-safe-diagnostic.yml"
+      - "portafoglio-v3443-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Extract V3.4.43 source
+        run: |
+          rm -rf android-project-v3448
+          mkdir android-project-v3448
+          unzip -q "portafoglio-v3443-dev.zip" -d android-project-v3448
+
+      - name: Patch version and manifest
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          root=Path('android-project-v3448')
+          gradle=root/'app/build.gradle'
+          db=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          manifest=root/'app/src/main/AndroidManifest.xml'
+          g=gradle.read_text(encoding='utf-8')
+          d=db.read_text(encoding='utf-8')
+          m=manifest.read_text(encoding='utf-8')
+          assert 'versionCode 85' in g
+          assert 'versionName "3.4.43-dev"' in g
+          assert 'DB_VERSION = 16' in d
+          g=g.replace('versionCode 85','versionCode 90',1)
+          g=g.replace('versionName "3.4.43-dev"','versionName "3.4.48-dev-safe-diagnostic"',1)
+          d=d.replace('DB_VERSION = 16','DB_VERSION = 17',1)
+          old='''        <activity
+                      android:name=".MainActivity"
+                      android:screenOrientation="portrait"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>'''
+          new='''        <activity
+                      android:name=".DiagnosticActivity"
+                      android:screenOrientation="portrait"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <activity
+                      android:name=".MainActivity"
+                      android:screenOrientation="portrait"
+                      android:exported="false" />'''
+          if old not in m:
+              raise SystemExit('MainActivity launcher block not found')
+          m=m.replace(old,new,1)
+          gradle.write_text(g,encoding='utf-8')
+          db.write_text(d,encoding='utf-8')
+          manifest.write_text(m,encoding='utf-8')
+          PY
+
+      - name: Add safe diagnostic activity
+        run: |
+          cat > android-project-v3448/app/src/main/java/it/portafoglio2026/v3/DiagnosticActivity.java <<'JAVA'
+          package it.portafoglio2026.v3;
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.content.*;
+          import android.database.Cursor;
+          import android.database.sqlite.SQLiteDatabase;
+          import android.graphics.Color;
+          import android.widget.*;
+          import java.io.PrintWriter;
+          import java.io.StringWriter;
+          import java.util.*;
+
+          public class DiagnosticActivity extends Activity {
+              TextView report;
+              SharedPreferences prefs;
+              Thread.UncaughtExceptionHandler previous;
+
+              int dp(float v){return (int)(v*getResources().getDisplayMetrics().density+0.5f);}
+
+              @Override public void onCreate(Bundle b){
+                  super.onCreate(b);
+                  prefs=getSharedPreferences("startup_diagnostic",MODE_PRIVATE);
+                  installCrashRecorder();
+                  buildUi();
+                  showSavedCrash();
+              }
+
+              void installCrashRecorder(){
+                  previous=Thread.getDefaultUncaughtExceptionHandler();
+                  Thread.setDefaultUncaughtExceptionHandler((t,e)->{
+                      try{
+                          StringWriter sw=new StringWriter();
+                          e.printStackTrace(new PrintWriter(sw));
+                          prefs.edit().putString("last_crash",sw.toString()).commit();
+                      }catch(Throwable ignored){}
+                      if(previous!=null)previous.uncaughtException(t,e);
+                  });
+              }
+
+              TextView text(String s,int size,boolean bold){
+                  TextView v=new TextView(this);
+                  v.setText(s);v.setTextSize(size);v.setTextColor(Color.WHITE);
+                  if(bold)v.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);
+                  v.setPadding(0,dp(6),0,dp(6));v.setTextIsSelectable(true);return v;
+              }
+
+              Button button(String s){
+                  Button b=new Button(this);b.setText(s);b.setAllCaps(false);b.setTextSize(16);b.setMinHeight(dp(52));return b;
+              }
+
+              void buildUi(){
+                  ScrollView sc=new ScrollView(this);
+                  LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);
+                  box.setPadding(dp(18),dp(22),dp(18),dp(30));box.setBackgroundColor(Color.rgb(3,32,61));
+                  box.addView(text("Portafoglio 2026 • V3.4.48",22,true));
+                  box.addView(text("Diagnostica sicura: questa schermata non modifica né cancella i dati.",14,false));
+                  report=text("Stato: launcher diagnostico avviato correttamente.",14,false);box.addView(report);
+                  Button db=button("1. Controlla database");db.setOnClickListener(v->testDatabase());box.addView(db);
+                  Button cl=button("2. Controlla caricamento classi");cl.setOnClickListener(v->testClasses());box.addView(cl);
+                  Button launch=button("3. Avvia Portafoglio e registra il crash");launch.setOnClickListener(v->launchMain());box.addView(launch);
+                  Button copy=button("Copia diagnosi");copy.setOnClickListener(v->copyReport());box.addView(copy);
+                  sc.addView(box);setContentView(sc);
+              }
+
+              void showSavedCrash(){
+                  String crash=prefs.getString("last_crash","");
+                  if(crash!=null&&!crash.trim().isEmpty())report.setText("ULTIMO CRASH REGISTRATO:\n\n"+trimCrash(crash));
+              }
+
+              String trimCrash(String s){
+                  String[] lines=s.split("\\n");StringBuilder out=new StringBuilder();
+                  for(int i=0;i<Math.min(lines.length,30);i++)out.append(lines[i]).append("\n");return out.toString();
+              }
+
+              void testDatabase(){
+                  StringBuilder s=new StringBuilder("TEST DATABASE\n");SQLiteDatabase db=null;Cursor c=null;
+                  try{
+                      String path=getDatabasePath("portafoglio2026_v32.db").getPath();s.append("File: ").append(path).append("\n");
+                      db=SQLiteDatabase.openDatabase(path,null,SQLiteDatabase.OPEN_READONLY);
+                      c=db.rawQuery("PRAGMA user_version",null);if(c.moveToFirst())s.append("user_version: ").append(c.getInt(0)).append("\n");c.close();c=null;
+                      Set<String> tables=new TreeSet<>();c=db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",null);
+                      while(c.moveToNext())tables.add(c.getString(0));c.close();c=null;
+                      String[] required={"settings","portfolios","income_records","snapshots","pac_records","annual_history","annual_portfolio_history","positions","portfolio_status","movement_records","trade_records","cost_records","statement_imports","daily_snapshots"};
+                      ArrayList<String> missing=new ArrayList<>();for(String t:required)if(!tables.contains(t))missing.add(t);
+                      s.append("Tabelle trovate: ").append(tables.size()).append("\n");
+                      s.append(missing.isEmpty()?"Tabelle richieste: OK\n":"TABELLE MANCANTI: "+missing+"\n");
+                      s.append("annual_history: ").append(columns(db,"annual_history")).append("\n");
+                      s.append("annual_portfolio_history: ").append(columns(db,"annual_portfolio_history")).append("\n");
+                      s.append("income_records: ").append(columns(db,"income_records")).append("\n");
+                      s.append("positions: ").append(columns(db,"positions")).append("\n\nESITO DATABASE: OK");
+                  }catch(Throwable e){
+                      s.append("\nERRORE DATABASE:\n").append(e.getClass().getName());if(e.getMessage()!=null)s.append("\n").append(e.getMessage());
+                  }finally{if(c!=null)c.close();if(db!=null)db.close();}
+                  report.setText(s.toString());
+              }
+
+              String columns(SQLiteDatabase db,String table){
+                  Cursor c=null;try{ArrayList<String> x=new ArrayList<>();c=db.rawQuery("PRAGMA table_info("+table+")",null);int idx=c.getColumnIndex("name");while(c.moveToNext())x.add(idx>=0?c.getString(idx):c.getString(1));return x.toString();}
+                  catch(Throwable e){return "ERRORE "+e.getClass().getSimpleName()+": "+e.getMessage();}
+                  finally{if(c!=null)c.close();}
+              }
+
+              void testClasses(){
+                  StringBuilder s=new StringBuilder("TEST CLASSI\n");String[] names={"it.portafoglio2026.v3.DbHelper","it.portafoglio2026.v3.MainActivity","com.tom_roush.pdfbox.android.PDFBoxResourceLoader"};
+                  for(String n:names){try{Class.forName(n,false,getClassLoader());s.append("OK: ").append(n).append("\n");}catch(Throwable e){s.append("ERRORE: ").append(n).append("\n").append(e.getClass().getName()).append(": ").append(e.getMessage()).append("\n");}}
+                  report.setText(s.toString());
+              }
+
+              void launchMain(){
+                  prefs.edit().remove("last_crash").commit();
+                  report.setText("Avvio MainActivity... Se l'app si chiude, riaprila: questa schermata mostrerà il crash registrato.");
+                  startActivity(new Intent(this,MainActivity.class));
+              }
+
+              void copyReport(){
+                  ClipboardManager cm=(ClipboardManager)getSystemService(CLIPBOARD_SERVICE);cm.setPrimaryClip(ClipData.newPlainText("Diagnosi Portafoglio 2026",report.getText()));Toast.makeText(this,"Diagnosi copiata",Toast.LENGTH_SHORT).show();
+              }
+          }
+          JAVA
+
+      - name: Verify V3.4.48 source
+        run: |
+          set -e
+          grep -Fq 'versionCode 90' android-project-v3448/app/build.gradle
+          grep -Fq 'versionName "3.4.48-dev-safe-diagnostic"' android-project-v3448/app/build.gradle
+          grep -Fq 'DB_VERSION = 17' android-project-v3448/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
+          grep -Fq 'android:name=".DiagnosticActivity"' android-project-v3448/app/src/main/AndroidManifest.xml
+          grep -Fq 'ULTIMO CRASH REGISTRATO' android-project-v3448/app/src/main/java/it/portafoglio2026/v3/DiagnosticActivity.java
+
+      - name: Build signed V3.4.48 APK
+        working-directory: android-project-v3448
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed APK
+        run: |
+          test -f android-project-v3448/app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs android-project-v3448/app/build/outputs/apk/release/app-release.apk
+
+      - name: Upload signed V3.4.48 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3448-DEV-SAFE-DIAGNOSTIC-SIGNED-APK
+          path: android-project-v3448/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
