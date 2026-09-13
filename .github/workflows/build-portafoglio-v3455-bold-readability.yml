@@ -1,0 +1,769 @@
+name: Build Portafoglio 2026 V3.4.55 DEV Bold Readability
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3455-bold-readability.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Extract V3.4.44 source
+        run: |
+          rm -rf android-project-v3455
+          mkdir android-project-v3455
+          unzip -q "portafoglio-v3444-dev.zip" -d android-project-v3455
+
+      - name: Patch V3.4.55
+        shell: bash
+        run: |
+          cat > /tmp/make_v3455.py <<'PY'
+          from pathlib import Path
+
+          root = Path("android-project-v3455")
+          main_path = root / "app/src/main/java/it/portafoglio2026/v3/MainActivity.java"
+          db_path = root / "app/src/main/java/it/portafoglio2026/v3/DbHelper.java"
+          gradle_path = root / "app/build.gradle"
+
+          main = main_path.read_text(encoding="utf-8")
+          db = db_path.read_text(encoding="utf-8")
+          gradle = gradle_path.read_text(encoding="utf-8")
+
+          assert 'versionCode 86' in gradle
+          assert 'versionName "3.4.44-dev"' in gradle
+          assert 'DB_VERSION = 16' in db
+          assert 'void showHistory()' in main
+          assert 'void showIncomeMonth(int month)' in main
+          assert 'boolean isHistoricalAggregateIncome' in main
+
+          gradle = gradle.replace('versionCode 86', 'versionCode 97', 1)
+          gradle = gradle.replace(
+              'versionName "3.4.44-dev"',
+              'versionName "3.4.55-dev-bold-readability"',
+              1
+          )
+
+          # Device DB is already at 17 after the recovery builds.
+          db = db.replace('DB_VERSION = 16', 'DB_VERSION = 17', 1)
+
+          # Keep the proven V3.4.49 fix for the Storico NPE.
+          needle = 'Math.abs(autoGross)>0.0001?autoGross:'
+          replacement = 'Math.abs(autoGross)>0.0001?Double.valueOf(autoGross):'
+          count = main.count(needle)
+          if count != 2:
+              raise RuntimeError(f"Expected 2 V3.4.49 history ternaries, found {count}")
+          main = main.replace(needle, replacement)
+
+          # V3.4.55: keep the Home label aligned with the installed APK.
+          home_version_hits = main.count("DEV 3.4.42")
+          if home_version_hits < 1:
+              raise RuntimeError("Home DEV 3.4.42 label not found")
+          main = main.replace("DEV 3.4.42", "DEV 3.4.55")
+
+          def matching_brace(text, open_pos):
+              depth = 0
+              i = open_pos
+              in_str = in_char = in_line = in_block = False
+              esc = False
+              while i < len(text):
+                  c = text[i]
+                  n = text[i+1] if i+1 < len(text) else ""
+                  if in_line:
+                      if c == "\n": in_line = False
+                      i += 1
+                      continue
+                  if in_block:
+                      if c == "*" and n == "/":
+                          in_block = False
+                          i += 2
+                          continue
+                      i += 1
+                      continue
+                  if in_str:
+                      if esc: esc = False
+                      elif c == "\\": esc = True
+                      elif c == '"': in_str = False
+                      i += 1
+                      continue
+                  if in_char:
+                      if esc: esc = False
+                      elif c == "\\": esc = True
+                      elif c == "'": in_char = False
+                      i += 1
+                      continue
+                  if c == "/" and n == "/":
+                      in_line = True; i += 2; continue
+                  if c == "/" and n == "*":
+                      in_block = True; i += 2; continue
+                  if c == '"':
+                      in_str = True; i += 1; continue
+                  if c == "'":
+                      in_char = True; i += 1; continue
+                  if c == "{":
+                      depth += 1
+                  elif c == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return i
+                  i += 1
+              raise RuntimeError("Unbalanced Java braces")
+
+          def replace_method(text, signature, replacement_text):
+              start = text.index(signature)
+              open_pos = text.index("{", start)
+              close_pos = matching_brace(text, open_pos)
+              return text[:start] + replacement_text + text[close_pos+1:]
+
+          # V3.4.55 readability: the user asked for the app text to be
+          # easier to read. Make TextViews created by the two common helpers
+          # bold when their final helper argument was the normal-weight flag.
+          def make_helper_text_bold(source, helper_names):
+              replacements=[]
+              i=0
+              in_str=in_char=in_line=in_block=False
+              esc=False
+              while i < len(source):
+                  c=source[i]
+                  n=source[i+1] if i+1 < len(source) else ""
+
+                  if in_line:
+                      if c=="\n": in_line=False
+                      i+=1; continue
+                  if in_block:
+                      if c=="*" and n=="/":
+                          in_block=False; i+=2; continue
+                      i+=1; continue
+                  if in_str:
+                      if esc: esc=False
+                      elif c=="\\": esc=True
+                      elif c=='"': in_str=False
+                      i+=1; continue
+                  if in_char:
+                      if esc: esc=False
+                      elif c=="\\": esc=True
+                      elif c=="'": in_char=False
+                      i+=1; continue
+                  if c=="/" and n=="/":
+                      in_line=True; i+=2; continue
+                  if c=="/" and n=="*":
+                      in_block=True; i+=2; continue
+                  if c=='"':
+                      in_str=True; i+=1; continue
+                  if c=="'":
+                      in_char=True; i+=1; continue
+
+                  matched=None
+                  for name in helper_names:
+                      if source.startswith(name, i):
+                          before=source[i-1] if i>0 else ""
+                          j=i+len(name)
+                          while j<len(source) and source[j].isspace(): j+=1
+                          if (not (before.isalnum() or before=="_")) and j<len(source) and source[j]=="(":
+                              matched=(name,j)
+                              break
+
+                  if not matched:
+                      i+=1; continue
+
+                  name,op=matched
+                  depth=0
+                  k=op
+                  s_str=s_char=s_line=s_block=False
+                  s_esc=False
+                  close=None
+                  while k < len(source):
+                      ch=source[k]
+                      nx=source[k+1] if k+1 < len(source) else ""
+                      if s_line:
+                          if ch=="\n": s_line=False
+                          k+=1; continue
+                      if s_block:
+                          if ch=="*" and nx=="/":
+                              s_block=False; k+=2; continue
+                          k+=1; continue
+                      if s_str:
+                          if s_esc: s_esc=False
+                          elif ch=="\\": s_esc=True
+                          elif ch=='"': s_str=False
+                          k+=1; continue
+                      if s_char:
+                          if s_esc: s_esc=False
+                          elif ch=="\\": s_esc=True
+                          elif ch=="'": s_char=False
+                          k+=1; continue
+                      if ch=="/" and nx=="/":
+                          s_line=True; k+=2; continue
+                      if ch=="/" and nx=="*":
+                          s_block=True; k+=2; continue
+                      if ch=='"':
+                          s_str=True; k+=1; continue
+                      if ch=="'":
+                          s_char=True; k+=1; continue
+                      if ch=="(":
+                          depth+=1
+                      elif ch==")":
+                          depth-=1
+                          if depth==0:
+                              close=k
+                              break
+                      k+=1
+
+                  if close is None:
+                      raise RuntimeError(f"Unbalanced call for {name}")
+
+                  q=close-1
+                  while q>op and source[q].isspace(): q-=1
+                  end=q+1
+                  if q>=4 and source[q-4:q+1]=="false":
+                      start=q-4
+                      # Only flip a final boolean helper argument.
+                      p=start-1
+                      while p>op and source[p].isspace(): p-=1
+                      if p>=op and source[p]==",":
+                          replacements.append((start,end,"true"))
+                  i=close+1
+
+              for a,b,val in reversed(replacements):
+                  source=source[:a]+val+source[b:]
+              return source,len(replacements)
+
+          main,bold_text_hits=make_helper_text_bold(main,("tv","financeText"))
+          if bold_text_hits < 20:
+              raise RuntimeError(f"Expected many normal-weight app text calls, made bold only {bold_text_hits}")
+
+          # V3.4.52: synchronize the current-year annual_history row with the
+          # live current-year values so Home and Storico use the same numbers.
+          home_anchor = '    void showHome(){'
+          if home_anchor not in main:
+              raise RuntimeError("showHome anchor not found")
+
+          annual_sync_helper = r'''
+              void syncCurrentAnnualHistoryV3455(){
+                  int y=dataYear();
+                  if(db.isAnnualClosed(y))return;
+
+                  Double startCap=null,annualLoss=null,recovery=null;
+                  boolean annualRowFound=false;
+                  Cursor c=db.annualHistory();
+                  try{
+                      while(c.moveToNext()){
+                          if(c.getInt(c.getColumnIndexOrThrow("year"))!=y)continue;
+                          annualRowFound=true;
+                          startCap=getNullable(c,"starting_capital");
+                          annualLoss=getNullable(c,"annual_loss");
+                          recovery=getNullable(c,"fiscal_recovery");
+                          break;
+                      }
+                  }finally{c.close();}
+                  if(!annualRowFound)return;
+
+                  double gross=db.sumIncomeActive("gross");
+                  double taxes=Math.max(0,db.sumIncomeTaxesActive());
+                  Double grossBox=Double.valueOf(gross);
+                  Double taxesBox=Double.valueOf(taxes);
+                  Double afterMinus=annualResultAfterMinus(grossBox,annualLoss);
+                  Double overall=annualOverallResult(grossBox,annualLoss,recovery,taxesBox);
+                  Double rr=annualReturnFromResult(y,startCap,overall);
+
+                  android.content.ContentValues cv=new android.content.ContentValues();
+                  cv.put("gross_income",gross);
+                  if(overall!=null)cv.put("portfolio_profit",overall);
+                  if(afterMinus!=null)cv.put("net_income",afterMinus);
+                  cv.put("annual_taxes",taxes);
+                  if(overall!=null)cv.put("overall_result",overall);
+                  if(rr!=null)cv.put("return_rate",rr);
+
+                  db.getWritableDatabase().update(
+                      "annual_history",cv,"year=?",
+                      new String[]{String.valueOf(y)}
+                  );
+              }
+
+          '''
+          main = main.replace(home_anchor, annual_sync_helper + home_anchor, 1)
+
+          # Repair the stale current-year row before Home reads annual_history.
+          main = main.replace(
+              home_anchor,
+              '    void showHome(){syncCurrentAnnualHistoryV3455();',
+              1
+          )
+
+          # Helpers: monthly values only from genuinely dated records.
+          helper_anchor = '    void showIncome(){'
+          if helper_anchor not in main:
+              raise RuntimeError("showIncome anchor not found")
+
+          helpers = r'''
+              boolean incomeRowForYearMonth(Cursor c,int year,int month){
+                  int di=c.getColumnIndex("date"),mi=c.getColumnIndex("month");
+                  if(di<0||c.isNull(di))return false;
+                  String dt=c.getString(di);
+                  if(dt==null||dt.length()<7||!dt.startsWith(String.valueOf(year)+"-"))return false;
+                  if(month>0){
+                      int cm=mi>=0&&!c.isNull(mi)?c.getInt(mi):0;
+                      if(cm!=month)return false;
+                  }
+                  return true;
+              }
+
+              boolean historicalAggregateRow(Cursor c){
+                  String b="",inst="",notes="";
+                  int bi=c.getColumnIndex("broker"),ii=c.getColumnIndex("instrument"),ni=c.getColumnIndex("notes");
+                  if(bi>=0&&!c.isNull(bi))b=c.getString(bi);
+                  if(ii>=0&&!c.isNull(ii))inst=c.getString(ii);
+                  if(ni>=0&&!c.isNull(ni))notes=c.getString(ni);
+                  return isHistoricalAggregateIncome(b,inst,notes);
+              }
+
+              Cursor incomeCursorForBroker(String broker){
+                  return broker==null?db.incomesActive():db.incomes(broker);
+              }
+
+              double datedIncomeMonth(String broker,int year,int month,String field){
+                  double total=0;Cursor c=incomeCursorForBroker(broker);
+                  try{
+                      int fi=c.getColumnIndexOrThrow(field);
+                      while(c.moveToNext()){
+                          if(!incomeRowForYearMonth(c,year,month)||historicalAggregateRow(c))continue;
+                          if(!c.isNull(fi))total+=c.getDouble(fi);
+                      }
+                  }finally{c.close();}
+                  return total;
+              }
+
+              int datedIncomeCount(String broker,int year,int month){
+                  int total=0;Cursor c=incomeCursorForBroker(broker);
+                  try{
+                      while(c.moveToNext())if(incomeRowForYearMonth(c,year,month)&&!historicalAggregateRow(c))total++;
+                  }finally{c.close();}
+                  return total;
+              }
+
+              boolean datedIncompleteNet(String broker,int year,int month){
+                  Cursor c=incomeCursorForBroker(broker);
+                  try{
+                      while(c.moveToNext()){
+                          if(!incomeRowForYearMonth(c,year,month)||historicalAggregateRow(c))continue;
+                          int ai=c.getColumnIndex("amount_mode"),ni=c.getColumnIndex("notes");
+                          String mode=ai>=0&&!c.isNull(ai)?c.getString(ai):"LORDO";
+                          String notes=ni>=0&&!c.isNull(ni)?c.getString(ni):"";
+                          String low=notes.toLowerCase(Locale.ROOT);
+                          if(!"NETTO".equalsIgnoreCase(mode)&&low.contains("da completare")&&(low.contains("netto")||low.contains("imposte")))return true;
+                      }
+                  }finally{c.close();}
+                  return false;
+              }
+
+              double datedKnownNet(String broker,int year,int month){
+                  double total=0;Cursor c=incomeCursorForBroker(broker);
+                  try{
+                      while(c.moveToNext()){
+                          if(!incomeRowForYearMonth(c,year,month)||historicalAggregateRow(c))continue;
+                          int ai=c.getColumnIndex("amount_mode"),ni=c.getColumnIndex("notes"),neti=c.getColumnIndex("net");
+                          String mode=ai>=0&&!c.isNull(ai)?c.getString(ai):"LORDO";
+                          String notes=ni>=0&&!c.isNull(ni)?c.getString(ni):"";
+                          String low=notes.toLowerCase(Locale.ROOT);
+                          boolean incomplete=!"NETTO".equalsIgnoreCase(mode)&&low.contains("da completare")&&(low.contains("netto")||low.contains("imposte"));
+                          if(!incomplete&&neti>=0&&!c.isNull(neti))total+=c.getDouble(neti);
+                      }
+                  }finally{c.close();}
+                  return total;
+              }
+
+              double datedIncomeTaxes(String broker,int year,int month){
+                  double total=0;Cursor c=incomeCursorForBroker(broker);
+                  try{
+                      while(c.moveToNext()){
+                          if(!incomeRowForYearMonth(c,year,month)||historicalAggregateRow(c))continue;
+                          int gi=c.getColumnIndex("gross"),ni=c.getColumnIndex("net"),ai=c.getColumnIndex("amount_mode");
+                          String mode=ai>=0&&!c.isNull(ai)?c.getString(ai):"LORDO";
+                          if("NETTO".equalsIgnoreCase(mode))continue;
+                          double g=gi>=0&&!c.isNull(gi)?c.getDouble(gi):0;
+                          double n=ni>=0&&!c.isNull(ni)?c.getDouble(ni):0;
+                          total+=Math.max(0,g-n);
+                      }
+                  }finally{c.close();}
+                  return total;
+              }
+
+              double historicalAggregateGross(String broker,int year){
+                  double total=0;Cursor c=incomeCursorForBroker(broker);
+                  try{
+                      int gi=c.getColumnIndex("gross");
+                      while(c.moveToNext()){
+                          if(!incomeRowForYearMonth(c,year,0)||!historicalAggregateRow(c))continue;
+                          if(gi>=0&&!c.isNull(gi))total+=c.getDouble(gi);
+                      }
+                  }finally{c.close();}
+                  return total;
+              }
+
+              double[] monthlyIncomeForYear(String broker,int year){
+                  double[] a=new double[12];
+                  for(int m=1;m<=12;m++)a[m-1]=datedIncomeMonth(broker,year,m,"gross");
+                  return a;
+              }
+
+          '''
+          main = main.replace(helper_anchor, helpers + helper_anchor, 1)
+
+          old_scope = 'double scopeIncomeMonth(int month,String field){return current.equals(TOTAL)?db.sumIncomeMonthActive(month,field):db.sumIncomeMonth(current,month,field);}'
+          if old_scope not in main:
+              raise RuntimeError("scopeIncomeMonth implementation not found")
+          main = main.replace(
+              old_scope,
+              'double scopeIncomeMonth(int month,String field){return datedIncomeMonth(brokerFilter(),dataYear(),month,field);}',
+              1
+          )
+
+          old_monthly = 'double[] monthlyIncome(String broker){double[] a=new double[12];for(int m=1;m<=12;m++)a[m-1]=broker==null?db.sumIncomeMonthActive(m,"gross"):db.sumIncomeMonth(broker,m,"gross");return a;}'
+          if old_monthly not in main:
+              raise RuntimeError("monthlyIncome implementation not found")
+          main = main.replace(
+              old_monthly,
+              'double[] monthlyIncome(String broker){return monthlyIncomeForYear(broker,dataYear());}',
+              1
+          )
+
+          # Proventi: month KPIs/counts must exclude historical aggregate rows.
+          old_line = 'double incomeTaxes=broker==null?db.sumIncomeTaxesActive():db.sumIncomeTaxes(broker);double monthTaxes=broker==null?db.sumIncomeTaxesMonthActive(curMonth):db.sumIncomeTaxesMonth(broker,curMonth);boolean monthIncomplete=scopeIncompleteNetMonth(curMonth);double monthKnownNet=current.equals(TOTAL)?db.sumKnownNetMonthActive(curMonth):db.sumKnownNetMonth(current,curMonth);double monthNet=scopeIncomeMonth(curMonth,"net");'
+          new_line = 'double incomeTaxes=broker==null?db.sumIncomeTaxesActive():db.sumIncomeTaxes(broker);double monthTaxes=datedIncomeTaxes(broker,dataYear(),curMonth);boolean monthIncomplete=datedIncompleteNet(broker,dataYear(),curMonth);double monthKnownNet=datedKnownNet(broker,dataYear(),curMonth);double monthNet=scopeIncomeMonth(curMonth,"net");'
+          if old_line not in main:
+              raise RuntimeError("showIncome monthly KPI line not found")
+          main = main.replace(old_line, new_line, 1)
+
+          old_months_card = 'LinearLayout monthsCard=card();monthsCard.addView(sectionTitle("Elenco proventi 2026 — mese per mese"));for(int m=1;m<=12;m++){final int month=m;double g=scopeIncomeMonth(m,"gross");Cursor cc=scopeIncomesForMonth(m);int cnt=cc.getCount();cc.close();if(g==0&&cnt==0&&m!=curMonth)continue;LinearLayout row=hrow();String movLabel=cnt==1?"1 movimento":cnt+" movimenti";TextView label=financeText(months[m-1]+"\\n"+euro.format(g)+" € • "+movLabel,13,C_GREEN,false);row.addView(label,new LinearLayout.LayoutParams(0,-2,1));Button open=ghostBtn("Apri ›");open.setOnClickListener(v->showIncomeMonth(month));row.addView(open,new LinearLayout.LayoutParams(dp(84),dp(46)));monthsCard.addView(row);}content.addView(monthsCard);'
+          new_months_card = 'double historicalYtd=historicalAggregateGross(broker,dataYear());if(Math.abs(historicalYtd)>0.0001){LinearLayout historicalCard=card();historicalCard.addView(sectionTitle("Pregresso "+dataYear()+" non ripartito"));historicalCard.addView(financeText(euro.format(historicalYtd)+" € lordi",15,C_GREEN,true));historicalCard.addView(muted("Storico aggregato Directa: incluso nel totale annuale, ma escluso dai singoli mesi e dal grafico perché la data 31/08 è tecnica e non rappresenta il mese reale di accredito.",12));content.addView(historicalCard);}LinearLayout monthsCard=card();monthsCard.addView(sectionTitle("Elenco proventi 2026 — mese per mese"));for(int m=1;m<=12;m++){final int month=m;double g=scopeIncomeMonth(m,"gross");int cnt=datedIncomeCount(broker,dataYear(),m);if(g==0&&cnt==0&&m!=curMonth)continue;LinearLayout row=hrow();String movLabel=cnt==1?"1 movimento":cnt+" movimenti";TextView label=financeText(months[m-1]+"\\n"+euro.format(g)+" € • "+movLabel,13,C_GREEN,false);row.addView(label,new LinearLayout.LayoutParams(0,-2,1));Button open=ghostBtn("Apri ›");open.setOnClickListener(v->showIncomeMonth(month));row.addView(open,new LinearLayout.LayoutParams(dp(84),dp(46)));monthsCard.addView(row);}content.addView(monthsCard);'
+          if old_months_card not in main:
+              raise RuntimeError("showIncome months card not found")
+          main = main.replace(old_months_card, new_months_card, 1)
+
+          new_show_income_month = r'''    void showIncomeMonth(int month){
+                  if(month<1||month>12){showIncome();return;}heading("Proventi • "+months[month-1],current);
+                  Button back=btn("← Tutti i mesi");back.setOnClickListener(v->showIncome());content.addView(back);
+                  String broker=brokerFilter();int year=dataYear();
+                  double gross=datedIncomeMonth(broker,year,month,"gross"),net=datedIncomeMonth(broker,year,month,"net");
+                  boolean incomplete=datedIncompleteNet(broker,year,month);
+                  double knownNet=datedKnownNet(broker,year,month),taxesMonth=datedIncomeTaxes(broker,year,month);
+                  int count=datedIncomeCount(broker,year,month);
+                  LinearLayout summary=card();summary.addView(tv(months[month-1]+" "+year,19,true));LinearLayout mr1=hrow();mr1.addView(kpiValueColor("Lordo mese",euro.format(gross)+" €",C_GREEN),new LinearLayout.LayoutParams(0,-2,1));gap(mr1,6);mr1.addView(kpiValueColor(incomplete?"Netto noto":"Netto mese",euro.format(incomplete?knownNet:net)+" €",C_GREEN),new LinearLayout.LayoutParams(0,-2,1));summary.addView(mr1);gap(summary,6);LinearLayout mr2=hrow();mr2.addView(kpiValueColor("Tasse mese",euro.format(taxesMonth)+" €",C_RED),new LinearLayout.LayoutParams(0,-2,1));gap(mr2,6);mr2.addView(kpi("Movimenti",String.valueOf(count)),new LinearLayout.LayoutParams(0,-2,1));summary.addView(mr2);if(incomplete)summary.addView(muted("Netto mese parziale.",12));content.addView(summary);
+
+                  LinkedHashMap<String,Double> groups=new LinkedHashMap<>();groups.put("Cedole",0.0);groups.put("Dividendi",0.0);groups.put("Distribuzioni",0.0);groups.put("Interessi",0.0);groups.put("Altri proventi",0.0);
+                  LinkedHashMap<String,Double> brokers=new LinkedHashMap<>();Cursor agg=scopeIncomesForMonth(month);while(agg.moveToNext()){
+                      String ab=agg.getString(agg.getColumnIndexOrThrow("broker")),inst=agg.getString(agg.getColumnIndexOrThrow("instrument"));int noteIdx=agg.getColumnIndex("notes");String notes=noteIdx>=0&&!agg.isNull(noteIdx)?agg.getString(noteIdx):"";
+                      if(!incomeRowForYearMonth(agg,year,month)||isHistoricalAggregateIncome(ab,inst,notes))continue;
+                      String t=incomeGroupLabel(agg.getString(agg.getColumnIndexOrThrow("income_type")));double g=agg.getDouble(agg.getColumnIndexOrThrow("gross"));groups.put(t,groups.get(t)+g);brokers.put(ab,brokers.containsKey(ab)?brokers.get(ab)+g:g);
+                  }agg.close();
+                  LinearLayout breakdown=card();breakdown.addView(tv("Composizione del mese",17,true));for(Map.Entry<String,Double> e:groups.entrySet())if(e.getValue()!=0){TextView pv=financeText(e.getKey()+": "+euro.format(e.getValue())+" €",13,C_GREEN,false);breakdown.addView(pv);};if(count==0)breakdown.addView(tv("Nessun provento datato in questo mese.",13,false));if(current.equals(TOTAL)&&!brokers.isEmpty()){breakdown.addView(tv("Per portafoglio",14,true));for(Map.Entry<String,Double> e:brokers.entrySet()){TextView pv=financeText(e.getKey()+": "+euro.format(e.getValue())+" €",13,C_GREEN,false);breakdown.addView(pv);};}content.addView(breakdown);
+
+                  LinearLayout list=card();list.addView(tv("Movimenti di "+months[month-1],17,true));Cursor c=scopeIncomesForMonth(month);int n=0;while(c.moveToNext()){
+                      long id=c.getLong(c.getColumnIndexOrThrow("id"));String b=c.getString(c.getColumnIndexOrThrow("broker")),dt=c.getString(c.getColumnIndexOrThrow("date")),inst=c.getString(c.getColumnIndexOrThrow("instrument")),ca=c.getString(c.getColumnIndexOrThrow("category")),rawType=c.getString(c.getColumnIndexOrThrow("income_type")),isinVal=c.getString(c.getColumnIndexOrThrow("isin"));double g=c.getDouble(c.getColumnIndexOrThrow("gross")),ne=c.getDouble(c.getColumnIndexOrThrow("net")),tr=c.getDouble(c.getColumnIndexOrThrow("tax_rate"));int mi=c.getColumnIndex("amount_mode");String mode=mi>=0&&!c.isNull(mi)?c.getString(mi):"LORDO";int noteIdx=c.getColumnIndex("notes");String notes=noteIdx>=0&&!c.isNull(noteIdx)?c.getString(noteIdx):"";
+                      if(!incomeRowForYearMonth(c,year,month)||isHistoricalAggregateIncome(b,inst,notes))continue;
+                      LinearLayout rr=new LinearLayout(this);rr.setOrientation(LinearLayout.HORIZONTAL);TextView tx=financeText(dt+" • "+b+"\n"+incomeGroupLabel(rawType)+" • "+inst+"\n"+incomeAmountLine(g,ne,mode,notes),13,C_GREEN,false);tx.setOnClickListener(v->showIncomeRecordDetail(dt,b,ca,rawType,inst,isinVal,g,ne,tr,mode,notes));rr.addView(tx,new LinearLayout.LayoutParams(0,-2,1));Button del=ghostBtn("×");del.setTextColor(C_RED);del.setOnClickListener(v->new AlertDialog.Builder(this).setMessage("Eliminare questo provento?").setPositiveButton("Elimina",(dd,w)->{db.deleteIncome(id);showIncomeMonth(month);}).setNegativeButton("Annulla",null).show());rr.addView(del,new LinearLayout.LayoutParams(dp(40),dp(40)));list.addView(rr);n++;
+                  }c.close();if(n==0)list.addView(tv("Nessun movimento datato nel mese.",13,false));content.addView(list);
+
+                  double historical=historicalAggregateGross(broker,year);
+                  if(Math.abs(historical)>0.0001){LinearLayout info=card();info.addView(muted("Il pregresso Directa non ripartito ("+euro.format(historical)+" € lordi) non è attribuito a "+months[month-1]+".",12));content.addView(info);}
+              }'''
+          main = replace_method(main, '    void showIncomeMonth(int month)', new_show_income_month)
+
+          new_show_history = r'''    void showHistory(){
+                  heading("Storico",current);
+                  ensureCurrentAnnualYearRecord();
+                  syncAnnualPortfolioRows(calendarYear(),false);
+
+                  ArrayList<Integer> years=new ArrayList<>();Cursor yc=db.annualHistory();while(yc.moveToNext()){int y=yc.getInt(yc.getColumnIndexOrThrow("year"));if(!years.contains(y))years.add(y);}yc.close();int currentDataYear=dataYear();if(!years.contains(currentDataYear))years.add(currentDataYear);java.util.Collections.sort(years,java.util.Collections.reverseOrder());
+
+                  int savedYear=currentDataYear;try{savedYear=Integer.parseInt(db.getSetting("history_year_filter",String.valueOf(currentDataYear)));}catch(Exception ignored){}
+                  if(!years.contains(savedYear))savedYear=years.isEmpty()?currentDataYear:years.get(0);
+                  final int historyYear=savedYear;
+
+                  LinearLayout filter=card();filter.addView(sectionTitle("Anno dello storico"));
+                  String[] labels=new String[years.size()];int selectedIndex=0;for(int i=0;i<years.size();i++){labels[i]=String.valueOf(years.get(i));if(years.get(i)==historyYear)selectedIndex=i;}
+                  Spinner yearSpinner=spinner(labels,selectedIndex);filter.addView(yearSpinner);
+                  filter.addView(muted(historyYear==currentDataYear?"Anno corrente: movimenti e proventi mensili disponibili.":"Anno storico aggregato: i movimenti mensili dettagliati non sono disponibili.",12));
+                  yearSpinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener(){public void onItemSelected(android.widget.AdapterView<?>p,View v,int pos,long id){int y=Integer.parseInt(labels[pos]);if(y!=historyYear){db.setSetting("history_year_filter",String.valueOf(y));showHistory();}}public void onNothingSelected(android.widget.AdapterView<?>p){}});
+                  content.addView(filter);
+
+                  if(historyYear==currentDataYear){
+                      addMovementSection();
+                      addFinancialHistorySection();
+                      if(!db.isAnnualClosed(historyYear))syncAnnualTotalRow(historyYear,false);
+                  }else{
+                      LinearLayout info=card();info.addView(sectionTitle("Dati "+historyYear));info.addView(muted("Per il "+historyYear+" sono disponibili i dati annuali aggregati. L'app non inventa movimenti, versamenti o una ripartizione mensile che non esistono nei dati storici.",12));content.addView(info);
+                  }
+
+                  LinearLayout annual=card(); annual.addView(tv("Resoconto annuale • "+historyYear,17,true));
+                  annual.addView(muted(historyYear==currentDataYear?"Fotografia di fine anno calcolata dai dati presenti nell'app. Il rendimento neutralizza i flussi esterni registrati.":"Storico aggregato: il rendimento è mostrato come dato storico; i flussi dettagliati dell'anno non sono disponibili.",12));
+                  if(historyYear==currentDataYear){
+                      Button recalc=btn("↻ Ricalcola "+historyYear);
+                      recalc.setOnClickListener(v->{syncAnnualTotalRow(historyYear,false);toast("Storico "+historyYear+" ricalcolato");showHistory();});annual.addView(recalc);
+                  }
+
+                  Cursor ah=db.annualHistory();boolean found=false;
+                  while(ah.moveToNext()){
+                      int yr=ah.getInt(ah.getColumnIndexOrThrow("year"));if(yr!=historyYear)continue;found=true;
+                      Double gi=getNullable(ah,"gross_income"),legacyProfit=getNullable(ah,"portfolio_profit"),rr=getNullable(ah,"return_rate");
+                      Double recovery=getNullable(ah,"fiscal_recovery"),taxes=getNullable(ah,"annual_taxes"),startCap=getNullable(ah,"starting_capital"),overall=getNullable(ah,"overall_result");
+                      Double annualLoss=getNullable(ah,"annual_loss"),finalCap=getNullable(ah,"final_capital");
+                      boolean closed=!ah.isNull(ah.getColumnIndexOrThrow("is_closed"))&&ah.getInt(ah.getColumnIndexOrThrow("is_closed"))==1;
+                      String closedAt=ah.isNull(ah.getColumnIndexOrThrow("closed_at"))?"":ah.getString(ah.getColumnIndexOrThrow("closed_at"));
+                      if(startCap==null||startCap<=0)startCap=inferAnnualStartingCapital(yr);if(finalCap==null||finalCap<=0)finalCap=inferAnnualFinalCapital(yr);
+                      Double grossBase=annualGrossBase(gi,legacyProfit),afterMinus=annualResultAfterMinus(grossBase,annualLoss);
+                      if(yr==currentDataYear){
+                          String hb=brokerFilter();
+                          grossBase=Double.valueOf(hb==null?db.sumIncomeActive("gross"):db.sumIncome(hb,"gross"));
+                          taxes=Double.valueOf(hb==null?db.sumIncomeTaxesActive():db.sumIncomeTaxes(hb));
+                          afterMinus=annualResultAfterMinus(grossBase,annualLoss);
+                          overall=annualOverallResult(grossBase,annualLoss,recovery,taxes);
+                          rr=annualReturnFromResult(yr,startCap,overall);
+                      }else{
+                          if(overall==null)overall=annualOverallResult(grossBase,annualLoss,recovery,taxes);
+                          if(rr==null)rr=annualReturnFromResult(yr,startCap,overall);
+                      }
+                      double[] parts=db.yearEndBreakdownActive(yr);Double invested=parts[3]>0?parts[0]:null,cash=parts[3]>0?parts[1]:null;if(finalCap==null&&parts[3]>0)finalCap=parts[2];double partTotal=parts[3]>0?parts[2]:(finalCap==null?0:finalCap);
+
+                      LinearLayout row=new LinearLayout(this);row.setOrientation(LinearLayout.VERTICAL);row.setPadding(0,dp(9),0,dp(9));
+                      row.addView(tv(yr+"  •  "+annualStatusLabel(yr,closed),16,true));row.addView(muted("TOTALE • tutti i portafogli",11));
+                      StringBuilder sb=new StringBuilder();
+                      if(startCap!=null)sb.append("Capitale iniziale: ").append(euro.format(startCap)).append(" €");
+                      if(invested!=null){if(sb.length()>0)sb.append("\n");sb.append("Titoli a fine anno: ").append(euro.format(invested)).append(" €");if(partTotal>0)sb.append(" • ").append(pct.format(invested/partTotal));}
+                      if(cash!=null){sb.append("\nLiquidità a fine anno: ").append(euro.format(cash)).append(" €");if(partTotal>0)sb.append(" • ").append(pct.format(cash/partTotal));}
+                      sb.append("\nPatrimonio finale: ").append(finalCap==null?"in aggiornamento":euro.format(finalCap)+" €");
+                      if(grossBase!=null)sb.append("\n\nDividendi e cedole incassati: ").append(grossBase>0?"+":"").append(euro.format(grossBase)).append(" €");
+                      if(annualLoss!=null&&annualLoss>0.0001)sb.append("\nPerdita / minus: -").append(euro.format(Math.abs(annualLoss))).append(" €");
+                      if(afterMinus!=null)sb.append("\nRisultato dopo perdita/minus: ").append(afterMinus>0?"+":"").append(euro.format(afterMinus)).append(" €");
+                      if(recovery!=null&&Math.abs(recovery)>0.0001)sb.append("\nRecupero fiscale minus: +").append(euro.format(Math.abs(recovery))).append(" €");
+                      double tx=Math.max(0,taxes==null?0:taxes);if(tx>0.0001)sb.append("\nTasse/costi proventi: -").append(euro.format(tx)).append(" €");
+                      if(overall!=null){sb.append("\nRisultato complessivo: ").append(overall>0?"+":"").append(euro.format(overall)).append(" €");if(rr!=null)sb.append("\nRendimento annuale: ").append(pct.format(rr)).append(historyYear==currentDataYear?" • flussi neutralizzati":" • dato storico aggregato");}
+                      if(closed&&!closedAt.isEmpty())sb.append("\nChiuso il: ").append(closedAt);
+                      row.addView(historyAnnualFinanceText(sb.toString(),startCap,invested,cash,finalCap,grossBase,annualLoss,afterMinus,recovery,taxes,overall,rr));
+                      if(historyYear!=currentDataYear)row.addView(muted("Flussi "+historyYear+": dettaglio non disponibile. Il totale storico viene mantenuto senza inventare versamenti/prelievi.",11));
+                      else if(parts[3]<=0&&finalCap!=null)row.addView(muted("Nota: è disponibile il patrimonio totale, ma non una separazione affidabile tra titoli e liquidità; l'app non inventa la ripartizione.",11));
+                      String ps=annualPortfolioSummary(yr,finalCap==null?0:finalCap);if(!ps.isEmpty())row.addView(muted(ps.startsWith("Ripartizione per portafoglio:")?ps:(closed?"Portafogli fotografati alla chiusura:\n":"Dettaglio portafogli calcolato automaticamente:\n")+ps,11));
+                      LinearLayout actions=new LinearLayout(this);actions.setOrientation(LinearLayout.HORIZONTAL);
+                      if(closed){Button reopen=btn("Riapri anno");reopen.setOnClickListener(v->reopenAnnualYear(yr));actions.addView(reopen,new LinearLayout.LayoutParams(0,dp(46),1));}
+                      else{Button close=btn("Chiudi anno "+yr);close.setOnClickListener(v->confirmCloseAnnualYear(yr));actions.addView(close,new LinearLayout.LayoutParams(0,dp(46),1));}
+                      row.addView(actions);annual.addView(row);
+                  }
+                  ah.close();if(!found)annual.addView(muted("Nessun resoconto annuale disponibile per "+historyYear+".",12));content.addView(annual);
+
+                  String broker=brokerFilter();
+                  if(historyYear==currentDataYear){
+                      double historical=historicalAggregateGross(broker,historyYear);
+                      if(Math.abs(historical)>0.0001){LinearLayout historicalCard=card();historicalCard.addView(sectionTitle("Pregresso "+historyYear+" non ripartito"));historicalCard.addView(financeText(euro.format(historical)+" € lordi",15,C_GREEN,true));historicalCard.addView(muted("Incluso nel totale annuale, ma non attribuito ad agosto né ad altri mesi perché la data dello storico aggregato è tecnica.",12));content.addView(historicalCard);}
+                      LinearLayout chart=card();chart.addView(tv("Proventi mensili "+historyYear,17,true));chart.addView(new ChartView(this,monthlyIncomeForYear(broker,historyYear),false,"€",m->showIncomeMonth(m)),new LinearLayout.LayoutParams(-1,dp(180)));content.addView(chart);
+                      for(int m=1;m<=12;m++){
+                          double gross=datedIncomeMonth(broker,historyYear,m,"gross"),net=datedIncomeMonth(broker,historyYear,m,"net"),value=portfolioMonth(broker,m),pac=0;
+                          if(current.equals(TOTAL)){for(String b:db.portfolioNames(true))pac+=getPacMonth(b,m);}else pac=getPacMonth(current,m);
+                          Double r=calcMonthlyReturn(broker,m);boolean incomplete=datedIncompleteNet(broker,historyYear,m);double knownNet=datedKnownNet(broker,historyYear,m);
+                          if(gross==0&&value==0&&r==null&&Math.abs(pac)<0.0001&&m>Calendar.getInstance().get(Calendar.MONTH)+1)continue;
+                          double taxesMonth=datedIncomeTaxes(broker,historyYear,m);
+                          LinearLayout c=card();c.addView(tv(months[m-1],16,true));c.addView(historyMonthFinanceText(value,gross,net,incomplete,knownNet,taxesMonth,pac,r));content.addView(c);
+                      }
+                  }else{
+                      LinearLayout noMonthly=card();noMonthly.addView(sectionTitle("Dettaglio mensile "+historyYear));noMonthly.addView(muted("Non disponibile: il "+historyYear+" è stato registrato come storico aggregato e non contiene movimenti mensili affidabili.",12));content.addView(noMonthly);
+                  }
+              }'''
+          main = replace_method(main, '    void showHistory()', new_show_history)
+
+          main = main.replace(
+              "PORTAFOGLIO2026_V3444;16",
+              "PORTAFOGLIO2026_V3455_BOLD_READABILITY;17"
+          )
+
+          main_path.write_text(main, encoding="utf-8")
+          db_path.write_text(db, encoding="utf-8")
+          gradle_path.write_text(gradle, encoding="utf-8")
+
+          print("V3.4.55 generated")
+          PY
+          python3 /tmp/make_v3455.py
+
+      - name: Verify V3.4.55 source
+        run: |
+          set -e
+          MAIN="android-project-v3455/app/src/main/java/it/portafoglio2026/v3/MainActivity.java"
+          DB="android-project-v3455/app/src/main/java/it/portafoglio2026/v3/DbHelper.java"
+          GRADLE="android-project-v3455/app/build.gradle"
+
+          grep -Fq 'applicationId "it.portafoglio2026.v32"' "$GRADLE"
+          grep -Fq 'versionCode 97' "$GRADLE"
+          grep -Fq 'versionName "3.4.55-dev-bold-readability"' "$GRADLE"
+          grep -Fq 'DB_VERSION = 17' "$DB"
+          grep -Fq 'Anno dello storico' "$MAIN"
+          grep -Fq 'history_year_filter' "$MAIN"
+          grep -Fq 'Pregresso "+historyYear+" non ripartito' "$MAIN"
+          grep -Fq 'monthlyIncomeForYear' "$MAIN"
+          grep -Fq 'historicalAggregateGross' "$MAIN"
+          grep -Fq 'dato storico aggregato' "$MAIN"
+          grep -Fq 'Double.valueOf(autoGross)' "$MAIN"
+          grep -Fq 'historyAnnualFinanceText(sb.toString(),startCap,invested,cash,finalCap,grossBase,annualLoss,afterMinus,recovery,taxes,overall,rr)' "$MAIN"
+          grep -Fq 'grossBase=Double.valueOf(hb==null?db.sumIncomeActive("gross"):db.sumIncome(hb,"gross"))' "$MAIN"
+          grep -Fq 'taxes=Double.valueOf(hb==null?db.sumIncomeTaxesActive():db.sumIncomeTaxes(hb))' "$MAIN"
+          grep -Fq 'Tasse/costi proventi: -' "$MAIN"
+          grep -Fq 'DEV 3.4.55' "$MAIN"
+          grep -Fq 'void syncCurrentAnnualHistoryV3455()' "$MAIN"
+          grep -Fq 'cv.put("gross_income",gross)' "$MAIN"
+          grep -Fq 'if(overall!=null)cv.put("portfolio_profit",overall);' "$MAIN"
+          grep -Fq 'cv.put("annual_taxes",taxes)' "$MAIN"
+          grep -Fq 'cv.put("overall_result",overall)' "$MAIN"
+          grep -Fq 'if(!annualRowFound)return;' "$MAIN"
+          grep -Fq 'void showHome(){syncCurrentAnnualHistoryV3455();' "$MAIN"
+          ! grep -Fq 'if(year==dataYear())syncCurrentAnnualHistoryV3455();' "$MAIN"
+          ! grep -Fq 'DEV 3.4.42' "$MAIN"
+          ! grep -Fq 'Math.abs(autoGross)>0.0001?autoGross:' "$MAIN"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path("android-project-v3455/app/src/main/java/it/portafoglio2026/v3/MainActivity.java").read_text()
+          # Representative normal-weight calls from the base UI must now be bold.
+          assert 'financeText(months[m-1]+"\\n"+euro.format(g)+" € • "+movLabel,13,C_GREEN,true)' in s
+          assert 'financeText(e.getKey()+": "+euro.format(e.getValue())+" €",13,C_GREEN,true)' in s
+          assert 'tv("Nessun provento datato in questo mese.",13,true)' in s
+          print("Bold readability checks OK")
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path("android-project-v3455/app/src/main/java/it/portafoglio2026/v3/MainActivity.java").read_text()
+
+          def method_body(signature):
+              start=s.index(signature)
+              op=s.index("{", start)
+              depth=0
+              in_str=in_char=in_line=in_block=False
+              esc=False
+              i=op
+              while i < len(s):
+                  c=s[i]
+                  n=s[i+1] if i+1 < len(s) else ""
+                  if in_line:
+                      if c=="\n": in_line=False
+                      i+=1; continue
+                  if in_block:
+                      if c=="*" and n=="/": in_block=False; i+=2; continue
+                      i+=1; continue
+                  if in_str:
+                      if esc: esc=False
+                      elif c=="\\": esc=True
+                      elif c=='"': in_str=False
+                      i+=1; continue
+                  if in_char:
+                      if esc: esc=False
+                      elif c=="\\": esc=True
+                      elif c=="'": in_char=False
+                      i+=1; continue
+                  if c=="/" and n=="/": in_line=True; i+=2; continue
+                  if c=="/" and n=="*": in_block=True; i+=2; continue
+                  if c=='"': in_str=True; i+=1; continue
+                  if c=="'": in_char=True; i+=1; continue
+                  if c=="{": depth+=1
+                  elif c=="}":
+                      depth-=1
+                      if depth==0: return s[op:i+1]
+                  i+=1
+              raise RuntimeError("unbalanced method")
+
+          helper=method_body("void syncCurrentAnnualHistoryV3455()")
+          annual=method_body("void syncAnnualTotalRow(")
+          assert "ensureCurrentAnnualYearRecord();" not in helper
+          assert "syncAnnualTotalRow(" not in helper
+          assert "annualHistoryExists(" not in helper
+          assert "saveAnnualHistory(" not in helper
+          assert "syncCurrentAnnualHistoryV3455();" not in annual
+          print("Startup recursion guard OK")
+          PY
+
+          python3 - <<'PY'
+          gross = 12302.88
+          taxes = 50.57
+          expected_result = 12252.31
+          actual_result = round(gross - taxes, 2)
+          home_proventi = gross
+          home_pl = actual_result
+          assert home_proventi == 12302.88
+          assert home_pl == 12252.31
+          assert actual_result == expected_result, (actual_result, expected_result)
+          start_cap = 110491.16
+          expected_rate = round(expected_result / start_cap * 100, 2)
+          assert expected_rate == 11.09, expected_rate
+          print(
+              f"Annual history sync regression OK: gross={gross:.2f}, "
+              f"taxes={taxes:.2f}, result={actual_result:.2f}, rate={expected_rate:.2f}%"
+          )
+          PY
+
+      - name: Build signed V3.4.55 APK
+        working-directory: android-project-v3455
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed APK
+        run: |
+          test -f android-project-v3455/app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs android-project-v3455/app/build/outputs/apk/release/app-release.apk
+
+      - name: Upload signed V3.4.55 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3455-DEV-BOLD-READABILITY-SIGNED-APK
+          path: android-project-v3455/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
