@@ -1,0 +1,54 @@
+name: Diagnose Portafoglio 2026 startup crash
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/diagnose-portafoglio-startup.yml"
+      - "portafoglio-v3443-dev.zip"
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract V3.4.43 source
+        run: |
+          rm -rf diagnostic-src
+          mkdir diagnostic-src
+          unzip -q "portafoglio-v3443-dev.zip" -d diagnostic-src
+
+      - name: Print MainActivity startup code
+        run: |
+          MAIN="diagnostic-src/app/src/main/java/it/portafoglio2026/v3/MainActivity.java"
+          echo "===== MainActivity.java ====="
+          sed -n '1,420p' "$MAIN"
+
+      - name: Print DbHelper migration code
+        run: |
+          DB="diagnostic-src/app/src/main/java/it/portafoglio2026/v3/DbHelper.java"
+          echo "===== DbHelper.java ====="
+          sed -n '1,520p' "$DB"
+
+      - name: Print AndroidManifest
+        run: |
+          MANIFEST="diagnostic-src/app/src/main/AndroidManifest.xml"
+          echo "===== AndroidManifest.xml ====="
+          cat "$MANIFEST"
+
+      - name: Upload diagnostic source excerpts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-startup-diagnostic-source
+          path: |
+            diagnostic-src/app/src/main/java/it/portafoglio2026/v3/MainActivity.java
+            diagnostic-src/app/src/main/java/it/portafoglio2026/v3/DbHelper.java
+            diagnostic-src/app/src/main/AndroidManifest.xml
+          if-no-files-found: error
