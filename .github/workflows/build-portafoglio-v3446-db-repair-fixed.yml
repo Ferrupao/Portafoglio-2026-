@@ -1,0 +1,269 @@
+name: Build Portafoglio 2026 V3.4.46 DEV Database Repair
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3446-db-repair-fixed.yml"
+      - "portafoglio-v3443-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Extract V3.4.43 project
+        run: |
+          rm -rf android-project-v3446
+          mkdir android-project-v3446
+          unzip -q "portafoglio-v3443-dev.zip" -d android-project-v3446
+
+      - name: Generate V3.4.46 DB repair source
+        shell: bash
+        run: |
+          cat > /tmp/make_repair.py <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path("android-project-v3446")
+          db_path = root / "app/src/main/java/it/portafoglio2026/v3/DbHelper.java"
+          main_path = root / "app/src/main/java/it/portafoglio2026/v3/MainActivity.java"
+          gradle_path = root / "app/build.gradle"
+
+          db = db_path.read_text(encoding="utf-8")
+          main = main_path.read_text(encoding="utf-8")
+          gradle = gradle_path.read_text(encoding="utf-8")
+
+          assert "DB_VERSION = 16" in db
+          assert "if(oldVersion < 16)" in db
+          assert "versionCode 85" in gradle
+          assert 'versionName "3.4.43-dev"' in gradle
+
+          gradle = gradle.replace("versionCode 85", "versionCode 88", 1)
+          gradle = gradle.replace(
+              'versionName "3.4.43-dev"',
+              'versionName "3.4.46-dev-db-repair"',
+              1
+          )
+          db = db.replace("DB_VERSION = 16", "DB_VERSION = 17", 1)
+
+          marker = "if(oldVersion < 16)"
+          start = db.index(marker)
+          open_brace = db.index("{", start)
+
+          def matching_brace(text, pos):
+              depth = 0
+              i = pos
+              in_str = False
+              in_char = False
+              in_line = False
+              in_block = False
+              esc = False
+              while i < len(text):
+                  c = text[i]
+                  n = text[i + 1] if i + 1 < len(text) else ""
+                  if in_line:
+                      if c == "\n":
+                          in_line = False
+                      i += 1
+                      continue
+                  if in_block:
+                      if c == "*" and n == "/":
+                          in_block = False
+                          i += 2
+                          continue
+                      i += 1
+                      continue
+                  if in_str:
+                      if esc:
+                          esc = False
+                      elif c == "\\":
+                          esc = True
+                      elif c == '"':
+                          in_str = False
+                      i += 1
+                      continue
+                  if in_char:
+                      if esc:
+                          esc = False
+                      elif c == "\\":
+                          esc = True
+                      elif c == "'":
+                          in_char = False
+                      i += 1
+                      continue
+                  if c == "/" and n == "/":
+                      in_line = True
+                      i += 2
+                      continue
+                  if c == "/" and n == "*":
+                      in_block = True
+                      i += 2
+                      continue
+                  if c == '"':
+                      in_str = True
+                      i += 1
+                      continue
+                  if c == "'":
+                      in_char = True
+                      i += 1
+                      continue
+                  if c == "{":
+                      depth += 1
+                  elif c == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return i
+                  i += 1
+              raise RuntimeError("Unbalanced braces")
+
+          close_brace = matching_brace(db, open_brace)
+          v16_body = db[open_brace + 1:close_brace]
+          sql_calls = re.findall(
+              r'db\.execSQL\s*\((.*?)\)\s*;',
+              v16_body,
+              flags=re.S
+          )
+          if not sql_calls:
+              raise RuntimeError("No db.execSQL calls found in V16 migration")
+
+          repair_lines = []
+          for expr in sql_calls:
+              repair_lines.append(
+                  "            safeRepairExec(db, " + expr.strip() + ");"
+              )
+
+          repair_block = (
+              "\n        if(oldVersion < 17){\n"
+              "            repairSchemaV17(db);\n"
+              "        }\n"
+          )
+          db = db[:close_brace + 1] + repair_block + db[close_brace + 1:]
+
+          helper = (
+              "\n    private static void safeRepairExec("
+              "android.database.sqlite.SQLiteDatabase db, String sql){\n"
+              "        try{\n"
+              "            db.execSQL(sql);\n"
+              "        }catch(android.database.SQLException e){\n"
+              "            String m = e.getMessage();\n"
+              "            String s = m == null ? \"\" : "
+              "m.toLowerCase(java.util.Locale.ROOT);\n"
+              "            if(s.contains(\"already exists\") || "
+              "s.contains(\"duplicate column name\")){ return; }\n"
+              "            throw e;\n"
+              "        }\n"
+              "    }\n\n"
+              "    private static void repairSchemaV17("
+              "android.database.sqlite.SQLiteDatabase db){\n"
+              "        db.beginTransaction();\n"
+              "        try{\n"
+              + "\n".join(repair_lines) + "\n"
+              "            db.setTransactionSuccessful();\n"
+              "        }finally{\n"
+              "            db.endTransaction();\n"
+              "        }\n"
+              "    }\n"
+          )
+
+          last = db.rfind("}")
+          if last < 0:
+              raise RuntimeError("DbHelper closing brace not found")
+          db = db[:last] + helper + "\n" + db[last:]
+
+          main = main.replace(
+              "PORTAFOGLIO2026_V3443;16",
+              "PORTAFOGLIO2026_V3446_DB_REPAIR;17"
+          )
+
+          db_path.write_text(db, encoding="utf-8")
+          main_path.write_text(main, encoding="utf-8")
+          gradle_path.write_text(gradle, encoding="utf-8")
+
+          print("Generated V3.4.46 repair. SQL statements:", len(sql_calls))
+          PY
+          python3 /tmp/make_repair.py
+
+      - name: Verify V3.4.46 repair source
+        run: |
+          set -e
+          DB="android-project-v3446/app/src/main/java/it/portafoglio2026/v3/DbHelper.java"
+          MAIN="android-project-v3446/app/src/main/java/it/portafoglio2026/v3/MainActivity.java"
+          GRADLE="android-project-v3446/app/build.gradle"
+          grep -Fq 'applicationId "it.portafoglio2026.v32"' "$GRADLE"
+          grep -Fq 'versionCode 88' "$GRADLE"
+          grep -Fq 'versionName "3.4.46-dev-db-repair"' "$GRADLE"
+          grep -Fq 'DB_VERSION = 17' "$DB"
+          grep -Fq 'if(oldVersion < 17)' "$DB"
+          grep -Fq 'repairSchemaV17(db)' "$DB"
+          grep -Fq 'safeRepairExec' "$DB"
+          grep -Fq 'PORTAFOGLIO2026_V3446_DB_REPAIR;17' "$MAIN"
+
+      - name: Build signed V3.4.46 DB repair APK
+        working-directory: android-project-v3446
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed APK
+        run: |
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs android-project-v3446/app/build/outputs/apk/release/app-release.apk
+
+      - name: Upload signed V3.4.46 DB repair APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3446-DEV-DB-REPAIR-SIGNED-APK
+          path: android-project-v3446/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
