@@ -1,0 +1,199 @@
+name: Build Portafoglio 2026 V3.4.47 DEV Startup Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3447-startup-diagnostic.yml"
+      - "portafoglio-v3443-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Extract V3.4.43 source
+        run: |
+          rm -rf android-project-v3447
+          mkdir android-project-v3447
+          unzip -q "portafoglio-v3443-dev.zip" -d android-project-v3447
+
+      - name: Patch protected startup
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path("android-project-v3447")
+          main_path = root / "app/src/main/java/it/portafoglio2026/v3/MainActivity.java"
+          db_path = root / "app/src/main/java/it/portafoglio2026/v3/DbHelper.java"
+          gradle_path = root / "app/build.gradle"
+
+          main = main_path.read_text(encoding="utf-8")
+          db = db_path.read_text(encoding="utf-8")
+          gradle = gradle_path.read_text(encoding="utf-8")
+
+          assert 'versionCode 85' in gradle
+          assert 'versionName "3.4.43-dev"' in gradle
+          assert 'DB_VERSION = 16' in db
+
+          gradle = gradle.replace('versionCode 85', 'versionCode 89', 1)
+          gradle = gradle.replace(
+              'versionName "3.4.43-dev"',
+              'versionName "3.4.47-dev-startup-diagnostic"',
+              1
+          )
+
+          # Match the DB version already used by the installed V3.4.46 repair.
+          db = db.replace('DB_VERSION = 16', 'DB_VERSION = 17', 1)
+
+          old = '''    @Override public void onCreate(Bundle b){
+                  super.onCreate(b);
+                  PDFBoxResourceLoader.init(getApplicationContext());
+                  db=new DbHelper(this);
+                  db.normalizeKnownNetIncomeModes();
+                  db.normalizeKnownHistoricalIncomeTypes();
+                  db.captureDailySnapshot(currentDate());
+                  buildShell();
+                  showHome();
+                  maybeAutoRefreshQuotes();
+              }
+          '''
+
+          new = '''    @Override public void onCreate(Bundle b){
+                  super.onCreate(b);
+                  try{
+                      PDFBoxResourceLoader.init(getApplicationContext());
+                      db=new DbHelper(this);
+                      db.normalizeKnownNetIncomeModes();
+                      db.normalizeKnownHistoricalIncomeTypes();
+                      buildShell();
+                      showHome();
+                  }catch(Throwable e){
+                      showStartupDiagnostic(e);
+                  }
+              }
+
+              void showStartupDiagnostic(Throwable e){
+                  try{
+                      StringBuilder s=new StringBuilder();
+                      s.append("V3.4.47 - ERRORE DI AVVIO\\n\\n");
+                      s.append("I dati non sono stati cancellati.\\n\\n");
+                      Throwable x=e;
+                      int n=0;
+                      while(x!=null && n<5){
+                          if(n>0)s.append("\\nCausa: ");
+                          s.append(x.getClass().getName());
+                          String m=x.getMessage();
+                          if(m!=null && !m.trim().isEmpty())s.append("\\n").append(m);
+                          x=x.getCause();
+                          n++;
+                      }
+                      s.append("\\n\\nFai uno screenshot completo di questa schermata.");
+                      TextView v=new TextView(this);
+                      v.setText(s.toString());
+                      v.setTextSize(15);
+                      v.setTextColor(Color.WHITE);
+                      v.setBackgroundColor(Color.rgb(3,32,61));
+                      v.setPadding(dp(20),dp(28),dp(20),dp(28));
+                      v.setTextIsSelectable(true);
+                      setContentView(v);
+                  }catch(Throwable ignored){}
+              }
+          '''
+
+          if old not in main:
+              raise SystemExit("Expected onCreate block not found")
+          main = main.replace(old, new, 1)
+
+          if "PORTAFOGLIO2026_V3443;16" in main:
+              main = main.replace(
+                  "PORTAFOGLIO2026_V3443;16",
+                  "PORTAFOGLIO2026_V3447_STARTUP_DIAGNOSTIC;17"
+              )
+
+          main_path.write_text(main, encoding="utf-8")
+          db_path.write_text(db, encoding="utf-8")
+          gradle_path.write_text(gradle, encoding="utf-8")
+          PY
+
+      - name: Verify V3.4.47 source
+        run: |
+          set -e
+          MAIN="android-project-v3447/app/src/main/java/it/portafoglio2026/v3/MainActivity.java"
+          DB="android-project-v3447/app/src/main/java/it/portafoglio2026/v3/DbHelper.java"
+          GRADLE="android-project-v3447/app/build.gradle"
+          grep -Fq 'versionCode 89' "$GRADLE"
+          grep -Fq 'versionName "3.4.47-dev-startup-diagnostic"' "$GRADLE"
+          grep -Fq 'DB_VERSION = 17' "$DB"
+          grep -Fq 'showStartupDiagnostic' "$MAIN"
+          grep -Fq 'V3.4.47 - ERRORE DI AVVIO' "$MAIN"
+
+      - name: Build signed V3.4.47 APK
+        working-directory: android-project-v3447
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed APK
+        run: |
+          test -f android-project-v3447/app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs android-project-v3447/app/build/outputs/apk/release/app-release.apk
+
+      - name: Upload signed V3.4.47 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3447-DEV-STARTUP-DIAGNOSTIC-SIGNED-APK
+          path: android-project-v3447/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
