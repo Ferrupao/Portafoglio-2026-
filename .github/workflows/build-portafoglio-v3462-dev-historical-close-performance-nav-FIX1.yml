@@ -1,0 +1,1575 @@
+name: Build Portafoglio 2026 V3.4.62 DEV Historical Close Performance Nav FIX1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3462-dev-historical-close-performance-nav-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3456-full-bold-readability.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Extract V3.4.44 source
+        run: |
+          rm -rf android-project-v3460
+          mkdir android-project-v3460
+          unzip -q "portafoglio-v3444-dev.zip" -d android-project-v3460
+
+      - name: Reuse proven V3.4.56 patch
+        run: |
+          python3 - <<'PY56'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/build-portafoglio-v3456-full-bold-readability.yml').read_text(encoding='utf-8')
+          start_marker = "          cat > /tmp/make_v3456.py <<'PY'\n"
+          end_marker = "\n          PY\n          python3 /tmp/make_v3456.py"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          script = textwrap.dedent(workflow[start:end])
+          script = script.replace('android-project-v3456', 'android-project-v3460')
+          Path('/tmp/make_v3456_for_v3460.py').write_text(script, encoding='utf-8')
+          print('Extracted proven V3.4.56 patch script for V3.4.58 base')
+          PY56
+          python3 /tmp/make_v3456_for_v3460.py
+
+      - name: Patch V3.4.58 annual history PDF updater
+        shell: bash
+        run: |
+          cat > /tmp/make_v3458.py <<'PY58'
+          from pathlib import Path
+          import re
+
+          root = Path('android-project-v3460')
+          main_path = root / 'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path = root / 'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path = root / 'app/build.gradle'
+
+          main = main_path.read_text(encoding='utf-8')
+          db = db_path.read_text(encoding='utf-8')
+          gradle = gradle_path.read_text(encoding='utf-8')
+
+          assert 'applicationId "it.portafoglio2026.v32"' in gradle
+          assert 'versionCode 98' in gradle
+          assert 'versionName "3.4.56-dev-full-bold-readability"' in gradle
+          assert 'DEV 3.4.56' in main
+          assert 'DB_VERSION = 17' in db
+          assert 'void showHistory()' in main
+          assert 'history_year_filter' in main
+
+          gradle = gradle.replace('versionCode 98', 'versionCode 100', 1)
+          gradle = gradle.replace(
+              'versionName "3.4.56-dev-full-bold-readability"',
+              'versionName "3.4.58-dev-annual-history-pdf"',
+              1
+          )
+
+          dep = "implementation 'com.tom-roush:pdfbox-android:2.0.27.0'"
+          if dep not in gradle:
+              m = re.search(r'dependencies\s*\{', gradle)
+              if not m:
+                  raise RuntimeError('dependencies block not found')
+              gradle = gradle[:m.end()] + '\n    ' + dep + gradle[m.end():]
+
+          main = main.replace('DEV 3.4.56', 'DEV 3.4.58')
+
+          def matching_brace(text, open_pos):
+              depth=0;i=open_pos;in_str=in_char=in_line=in_block=False;esc=False
+              while i<len(text):
+                  c=text[i];n=text[i+1] if i+1<len(text) else ''
+                  if in_line:
+                      if c=='\n':in_line=False
+                      i+=1;continue
+                  if in_block:
+                      if c=='*' and n=='/':in_block=False;i+=2;continue
+                      i+=1;continue
+                  if in_str:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='"':in_str=False
+                      i+=1;continue
+                  if in_char:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":in_char=False
+                      i+=1;continue
+                  if c=='/' and n=='/':in_line=True;i+=2;continue
+                  if c=='/' and n=='*':in_block=True;i+=2;continue
+                  if c=='"':in_str=True;i+=1;continue
+                  if c=="'":in_char=True;i+=1;continue
+                  if c=='{':depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          # Add the yearly PDF action to the Storico year selector card.
+          hs = main.index('void showHistory()')
+          ho = main.index('{', hs)
+          hc = matching_brace(main, ho)
+          history = main[hs:hc+1]
+          marker = 'content.addView(filter);'
+          if marker not in history:
+              raise RuntimeError('Storico filter marker not found')
+          button_code = r'''
+                  ensureAnnualPdfTableV3458();
+                  android.widget.Button annualPdfBtn=new android.widget.Button(this);
+                  annualPdfBtn.setText("Aggiorna anno da PDF");
+                  annualPdfBtn.setAllCaps(false);
+                  annualPdfBtn.setOnClickListener(v->pickAnnualHistoryPdfV3458(historyYear));
+                  filter.addView(annualPdfBtn);
+                  String annualPdfSummary=annualPdfSummaryV3458(historyYear);
+                  if(annualPdfSummary!=null&&!annualPdfSummary.isEmpty())filter.addView(muted(annualPdfSummary,12));
+          '''
+          history = history.replace(marker, button_code + '\n                  ' + marker, 1)
+
+          breakdown = 'double[] parts=db.yearEndBreakdownActive(yr);Double invested=parts[3]>0?parts[0]:null,cash=parts[3]>0?parts[1]:null;if(finalCap==null&&parts[3]>0)finalCap=parts[2];double partTotal=parts[3]>0?parts[2]:(finalCap==null?0:finalCap);'
+          replacement = '''double[] parts=db.yearEndBreakdownActive(yr);Double invested=parts[3]>0?parts[0]:null,cash=parts[3]>0?parts[1]:null;if(finalCap==null&&parts[3]>0)finalCap=parts[2];
+                      double[] pdfParts=annualPdfPortfolioValuesV3458(yr);
+                      if(pdfParts[0]>=0)invested=Double.valueOf(pdfParts[0]);
+                      if(pdfParts[1]>=0)cash=Double.valueOf(pdfParts[1]);
+                      if(pdfParts[2]>=0)finalCap=Double.valueOf(pdfParts[2]);
+                      double partTotal=(invested!=null||cash!=null)?((invested==null?0:invested)+(cash==null?0:cash)):(finalCap==null?0:finalCap);
+                      if(finalCap==null&&partTotal>0)finalCap=Double.valueOf(partTotal);'''
+          if breakdown not in history:
+              raise RuntimeError('Storico year-end breakdown marker not found')
+          history = history.replace(breakdown, replacement, 1)
+          main = main[:hs] + history + main[hc+1:]
+
+          # Merge the annual-PDF flow into the pre-existing onActivityResult
+          # instead of creating a second override.
+          oa = main.find('void onActivityResult(')
+          if oa < 0:
+              raise RuntimeError('Existing onActivityResult method not found')
+          ob = main.find('{', oa)
+          if ob < 0:
+              raise RuntimeError('Existing onActivityResult opening brace not found')
+          annual_result_hook = r'''
+                  if(requestCode==REQ_ANNUAL_HISTORY_PDF_V3458){
+                      handleAnnualPdfResultV3458(resultCode,data);
+                      return;
+                  }
+          '''
+          main = main[:ob+1] + annual_result_hook + main[ob+1:]
+
+          helpers = r'''
+              static final int REQ_ANNUAL_HISTORY_PDF_V3458=3458;
+
+              static class AnnualPdfParsedV3458{
+                  int year=-1;String docType="";String hash="";String name="";
+                  Double securitiesValue=null,liquidity=null,finalCapital=null,totalCosts=null,averageBalance=null;
+                  Double stampDuty=null,brokerageCommissions=null,capGainTax=null,dividendTax=null,tobinTax=null,realtimeQuotes=null;
+                  Double interestLong=null,securitiesLendingInterest=null,issuerRetrocessions=null,freeCommissionsPaid=null;
+              }
+
+              void ensureAnnualPdfTableV3458(){
+                  db.getWritableDatabase().execSQL(
+                      "CREATE TABLE IF NOT EXISTS annual_pdf_data("+
+                      "year INTEGER NOT NULL,"+
+                      "doc_type TEXT NOT NULL,"+
+                      "doc_hash TEXT,"+
+                      "doc_name TEXT,"+
+                      "imported_at TEXT,"+
+                      "securities_value REAL,"+
+                      "liquidity REAL,"+
+                      "final_capital REAL,"+
+                      "total_costs REAL,"+
+                      "average_balance REAL,"+
+                      "stamp_duty REAL,"+
+                      "brokerage_commissions REAL,"+
+                      "cap_gain_tax REAL,"+
+                      "dividend_tax REAL,"+
+                      "tobin_tax REAL,"+
+                      "realtime_quotes REAL,"+
+                      "interest_long REAL,"+
+                      "securities_lending_interest REAL,"+
+                      "issuer_retrocessions REAL,"+
+                      "free_commissions_paid REAL,"+
+                      "PRIMARY KEY(year,doc_type))"
+                  );
+              }
+
+              void pickAnnualHistoryPdfV3458(int year){
+                  db.setSetting("annual_pdf_import_year",String.valueOf(year));
+                  android.content.Intent i=new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);
+                  i.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+                  i.setType("application/pdf");
+                  startActivityForResult(i,REQ_ANNUAL_HISTORY_PDF_V3458);
+              }
+
+              void handleAnnualPdfResultV3458(int resultCode,android.content.Intent data){
+                  if(resultCode!=android.app.Activity.RESULT_OK||data==null||data.getData()==null)return;
+                  android.net.Uri uri=data.getData();
+                  try{getContentResolver().takePersistableUriPermission(uri,data.getFlags()&android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);}catch(Exception ignored){}
+                  int year=dataYear();
+                  try{year=Integer.parseInt(db.getSetting("annual_pdf_import_year",String.valueOf(dataYear())));}catch(Exception ignored){}
+                  final int selectedYear=year;
+                  new Thread(()->{
+                      try{
+                          final AnnualPdfParsedV3458 parsed=parseAnnualPdfV3458(selectedYear,uri);
+                          runOnUiThread(()->previewAnnualPdfV3458(parsed));
+                      }catch(Exception e){
+                          runOnUiThread(()->new android.app.AlertDialog.Builder(this)
+                              .setTitle("PDF non importato")
+                              .setMessage(e.getMessage()==null?"Documento non riconosciuto.":e.getMessage())
+                              .setPositiveButton("OK",null).show());
+                      }
+                  }).start();
+              }
+
+              AnnualPdfParsedV3458 parseAnnualPdfV3458(int selectedYear,android.net.Uri uri)throws Exception{
+                  java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream();
+                  try(java.io.InputStream in=getContentResolver().openInputStream(uri)){
+                      if(in==null)throw new Exception("Impossibile aprire il PDF.");
+                      byte[] buf=new byte[8192];int n,total=0;
+                      while((n=in.read(buf))>0){
+                          total+=n;if(total>25*1024*1024)throw new Exception("PDF troppo grande: limite 25 MB.");
+                          out.write(buf,0,n);
+                      }
+                  }
+                  byte[] bytes=out.toByteArray();
+                  java.security.MessageDigest md=java.security.MessageDigest.getInstance("SHA-256");
+                  byte[] dig=md.digest(bytes);StringBuilder hx=new StringBuilder();for(byte b:dig)hx.append(String.format(java.util.Locale.US,"%02x",b&255));
+
+                  com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(getApplicationContext());
+                  String text;
+                  try(com.tom_roush.pdfbox.pdmodel.PDDocument doc=com.tom_roush.pdfbox.pdmodel.PDDocument.load(bytes)){
+                      text=new com.tom_roush.pdfbox.text.PDFTextStripper().getText(doc);
+                  }
+                  if(text==null||text.trim().isEmpty())throw new Exception("Il PDF non contiene testo leggibile. Per ora sono supportati PDF testuali, non scansioni fotografiche.");
+
+                  AnnualPdfParsedV3458 p=new AnnualPdfParsedV3458();p.hash=hx.toString();p.name=pdfDisplayNameV3458(uri);
+                  java.util.regex.Matcher ym=java.util.regex.Pattern.compile("31\\s*/\\s*12\\s*/\\s*(20\\d{2})",java.util.regex.Pattern.CASE_INSENSITIVE).matcher(text);
+                  if(ym.find())p.year=Integer.parseInt(ym.group(1));
+                  if(p.year<0)throw new Exception("Anno del documento non riconosciuto.");
+                  if(p.year!=selectedYear)throw new Exception("Il PDF è riferito al "+p.year+", ma nello Storico è selezionato il "+selectedYear+". Nessun dato è stato modificato.");
+
+                  String low=text.toLowerCase(java.util.Locale.ITALIAN);
+                  if(low.contains("situazione patrimoniale")&&low.contains("totale titoli")){
+                      p.docType="PATRIMONIO";
+                      p.liquidity=findItalianAmountV3458(text,"TOTALE\\s+LIQUIDITA['’]?\\s*:?\\s*([0-9\\.]+,[0-9]{2})");
+                      p.securitiesValue=findItalianAmountV3458(text,"TOTALE\\s+TITOLI\\s+EURO[\\s_]*([0-9\\.]+,[0-9]{2})");
+                      if(p.liquidity==null||p.securitiesValue==null)throw new Exception("Situazione patrimoniale riconosciuta, ma totale titoli o liquidità non leggibili.");
+                      p.finalCapital=Double.valueOf(p.liquidity.doubleValue()+p.securitiesValue.doubleValue());
+                  }else if(low.contains("rendicontazione costi e oneri")||low.contains("totale costi dei servizi prestati")){
+                      p.docType="COSTI";
+                      p.stampDuty=findItalianAmountV3458(text,"Tasse\\s*-\\s*Bolli\\s+periodici\\s+([0-9\\.]+,[0-9]{2})");
+                      p.brokerageCommissions=findItalianAmountV3458(text,"Commissioni\\s+intermediazione\\s+([0-9\\.]+,[0-9]{2})");
+                      p.interestLong=findItalianAmountV3458(text,"Interessi\\s+Long\\s+([0-9\\.]+,[0-9]{2})");
+                      p.securitiesLendingInterest=findItalianAmountV3458(text,"Interessi\\s+prestito\\s+titoli\\s+([0-9\\.]+,[0-9]{2})");
+                      p.capGainTax=findItalianAmountV3458(text,"Tasse\\s*-\\s*Ritenute\\s+su\\s+cap\\.?gain\\s+([0-9\\.]+,[0-9]{2})");
+                      p.dividendTax=findItalianAmountV3458(text,"Tasse\\s*-\\s*Ritenute\\s+su\\s+dividendi\\s+([0-9\\.]+,[0-9]{2})");
+                      p.tobinTax=findItalianAmountV3458(text,"Tasse\\s*-\\s*Tobin\\s+Tax\\s+([0-9\\.]+,[0-9]{2})");
+                      p.realtimeQuotes=findItalianAmountV3458(text,"Quotazioni\\s+in\\s+tempo\\s+reale\\s+([0-9\\.]+,[0-9]{2})");
+                      p.issuerRetrocessions=findItalianAmountV3458(text,"Retrocessioni\\s+Emittenti\\s+Cw\\s+zero\\s+([0-9\\.]+,[0-9]{2})");
+                      p.freeCommissionsPaid=findItalianAmountV3458(text,"Commissioni\\s+Gratuite\\s+Pagate\\s+([0-9\\.]+,[0-9]{2})");
+                      p.totalCosts=findItalianAmountV3458(text,"Totale\\s+costi\\s+dei\\s+servizi\\s+prestati\\s+dalla\\s+Sim.*?Perc\\.?\\s*[0-9\\.]+,[0-9]{2}\\s*%\\s*([0-9\\.]+,[0-9]{2})");
+                      if(p.totalCosts==null)p.totalCosts=findItalianAmountV3458(text,"Totale\\s+costi\\s+dei\\s+servizi\\s+prestati\\s+dalla\\s+Sim.*?([0-9\\.]+,[0-9]{2})\\s*$");
+                      p.averageBalance=findItalianAmountV3458(text,"Giacenza\\s+media\\s+([0-9\\.]+,[0-9]{2})");
+                      if(p.totalCosts==null)throw new Exception("Rendicontazione costi riconosciuta, ma totale costi non leggibile.");
+                  }else throw new Exception("Tipo di PDF non riconosciuto. Sono supportati Situazione Patrimoniale e Rendicontazione Costi/Oneri Directa.");
+                  return p;
+              }
+
+              Double findItalianAmountV3458(String text,String pattern){
+                  java.util.regex.Matcher m=java.util.regex.Pattern.compile(pattern,java.util.regex.Pattern.CASE_INSENSITIVE|java.util.regex.Pattern.DOTALL|java.util.regex.Pattern.MULTILINE).matcher(text);
+                  if(!m.find())return null;
+                  try{return Double.valueOf(m.group(1).replace(" ","").replace(".","").replace(',','.'));}catch(Exception e){return null;}
+              }
+
+              String pdfDisplayNameV3458(android.net.Uri uri){
+                  String name="Documento PDF";android.database.Cursor c=null;
+                  try{c=getContentResolver().query(uri,new String[]{android.provider.OpenableColumns.DISPLAY_NAME},null,null,null);if(c!=null&&c.moveToFirst())name=c.getString(0);}catch(Exception ignored){}finally{if(c!=null)c.close();}
+                  return name==null?"Documento PDF":name;
+              }
+
+              boolean annualPdfSameHashV3458(AnnualPdfParsedV3458 p){
+                  ensureAnnualPdfTableV3458();android.database.Cursor c=db.getReadableDatabase().rawQuery("SELECT doc_hash FROM annual_pdf_data WHERE year=? AND doc_type=?",new String[]{String.valueOf(p.year),p.docType});
+                  try{return c.moveToFirst()&&!c.isNull(0)&&p.hash.equals(c.getString(0));}finally{c.close();}
+              }
+
+              void previewAnnualPdfV3458(AnnualPdfParsedV3458 p){
+                  if(annualPdfSameHashV3458(p)){
+                      new android.app.AlertDialog.Builder(this).setTitle("PDF già importato").setMessage("Questo documento è già stato usato per aggiornare lo storico "+p.year+". Nessun dato verrà duplicato.").setPositiveButton("OK",null).show();return;
+                  }
+                  String msg=annualPdfPreviewTextV3458(p);
+                  new android.app.AlertDialog.Builder(this)
+                      .setTitle("Aggiorna storico "+p.year)
+                      .setMessage(msg)
+                      .setNegativeButton("Annulla",null)
+                      .setPositiveButton("Conferma aggiornamento",(d,w)->saveAnnualPdfV3458(p))
+                      .show();
+              }
+
+              String annualPdfPreviewTextV3458(AnnualPdfParsedV3458 p){
+                  java.text.NumberFormat nf=java.text.NumberFormat.getNumberInstance(java.util.Locale.ITALY);nf.setMinimumFractionDigits(2);nf.setMaximumFractionDigits(2);
+                  StringBuilder s=new StringBuilder();s.append("Documento: ").append(p.name).append("\n\n");
+                  if("PATRIMONIO".equals(p.docType)){
+                      Double oldFinal=annualHistoryFieldV3458(p.year,"final_capital");double[] oldPdf=annualPdfPortfolioValuesV3458(p.year);double[] parts=db.yearEndBreakdownActive(p.year);
+                      Double oldSec=oldPdf[0]>=0?Double.valueOf(oldPdf[0]):(parts[3]>0?Double.valueOf(parts[0]):null);
+                      Double oldLiq=oldPdf[1]>=0?Double.valueOf(oldPdf[1]):(parts[3]>0?Double.valueOf(parts[1]):null);
+                      s.append("Titoli: ").append(oldSec==null?"—":nf.format(oldSec)+" €").append("  →  ").append(nf.format(p.securitiesValue)).append(" €\n");
+                      s.append("Liquidità: ").append(oldLiq==null?"—":nf.format(oldLiq)+" €").append("  →  ").append(nf.format(p.liquidity)).append(" €\n");
+                      s.append("Patrimonio finale: ").append(oldFinal==null?"—":nf.format(oldFinal)+" €").append("  →  ").append(nf.format(p.finalCapital)).append(" €\n\n");
+                      s.append("Il record annuale esistente verrà aggiornato, non duplicato.");
+                  }else{
+                      Double old=annualPdfCostValueV3458(p.year,"total_costs");
+                      s.append("Totale costi documentati: ").append(old==null?"—":nf.format(old)+" €").append("  →  ").append(nf.format(p.totalCosts)).append(" €");
+                      if(p.averageBalance!=null)s.append("\nGiacenza media: ").append(nf.format(p.averageBalance)).append(" €");
+                      s.append("\n\nI costi vengono registrati nello storico come dati documentali. Non vengono sottratti automaticamente dal risultato annuale, evitando doppi conteggi fiscali.");
+                  }
+                  return s.toString();
+              }
+
+              Double annualHistoryFieldV3458(int year,String field){
+                  android.database.Cursor c=db.annualHistory();try{while(c.moveToNext())if(c.getInt(c.getColumnIndexOrThrow("year"))==year)return getNullable(c,field);}finally{c.close();}return null;
+              }
+
+              void saveAnnualPdfV3458(AnnualPdfParsedV3458 p){
+                  ensureAnnualPdfTableV3458();android.database.sqlite.SQLiteDatabase w=db.getWritableDatabase();w.beginTransaction();
+                  try{
+                      android.content.ContentValues cv=new android.content.ContentValues();
+                      cv.put("year",p.year);cv.put("doc_type",p.docType);cv.put("doc_hash",p.hash);cv.put("doc_name",p.name);cv.put("imported_at",new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm",java.util.Locale.ITALY).format(new java.util.Date()));
+                      putNullableV3458(cv,"securities_value",p.securitiesValue);putNullableV3458(cv,"liquidity",p.liquidity);putNullableV3458(cv,"final_capital",p.finalCapital);putNullableV3458(cv,"total_costs",p.totalCosts);putNullableV3458(cv,"average_balance",p.averageBalance);
+                      putNullableV3458(cv,"stamp_duty",p.stampDuty);putNullableV3458(cv,"brokerage_commissions",p.brokerageCommissions);putNullableV3458(cv,"cap_gain_tax",p.capGainTax);putNullableV3458(cv,"dividend_tax",p.dividendTax);putNullableV3458(cv,"tobin_tax",p.tobinTax);putNullableV3458(cv,"realtime_quotes",p.realtimeQuotes);putNullableV3458(cv,"interest_long",p.interestLong);putNullableV3458(cv,"securities_lending_interest",p.securitiesLendingInterest);putNullableV3458(cv,"issuer_retrocessions",p.issuerRetrocessions);putNullableV3458(cv,"free_commissions_paid",p.freeCommissionsPaid);
+                      w.insertWithOnConflict("annual_pdf_data",null,cv,android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE);
+                      if("PATRIMONIO".equals(p.docType)&&p.finalCapital!=null){android.content.ContentValues ah=new android.content.ContentValues();ah.put("final_capital",p.finalCapital);w.update("annual_history",ah,"year=?",new String[]{String.valueOf(p.year)});}
+                      w.setTransactionSuccessful();
+                  }finally{w.endTransaction();}
+                  db.setSetting("history_year_filter",String.valueOf(p.year));
+                  new android.app.AlertDialog.Builder(this).setTitle("Storico aggiornato").setMessage("PDF acquisito per il "+p.year+". Nessun nuovo record annuale è stato creato e i risultati economici non sono stati ricalcolati automaticamente.").setPositiveButton("OK",(d,w2)->showHistory()).show();
+              }
+
+              void putNullableV3458(android.content.ContentValues cv,String key,Double v){if(v==null)cv.putNull(key);else cv.put(key,v);}
+
+              double[] annualPdfPortfolioValuesV3458(int year){
+                  ensureAnnualPdfTableV3458();double[] r=new double[]{-1,-1,-1};android.database.Cursor c=db.getReadableDatabase().rawQuery("SELECT securities_value,liquidity,final_capital FROM annual_pdf_data WHERE year=? AND doc_type='PATRIMONIO'",new String[]{String.valueOf(year)});
+                  try{if(c.moveToFirst()){if(!c.isNull(0))r[0]=c.getDouble(0);if(!c.isNull(1))r[1]=c.getDouble(1);if(!c.isNull(2))r[2]=c.getDouble(2);}}finally{c.close();}return r;
+              }
+
+              Double annualPdfCostValueV3458(int year,String field){
+                  ensureAnnualPdfTableV3458();String[] allowed=new String[]{"total_costs","average_balance","stamp_duty","brokerage_commissions","cap_gain_tax","dividend_tax","tobin_tax","realtime_quotes","interest_long","securities_lending_interest","issuer_retrocessions","free_commissions_paid"};boolean ok=false;for(String a:allowed)if(a.equals(field)){ok=true;break;}if(!ok)return null;
+                  android.database.Cursor c=db.getReadableDatabase().rawQuery("SELECT "+field+" FROM annual_pdf_data WHERE year=? AND doc_type='COSTI'",new String[]{String.valueOf(year)});try{return c.moveToFirst()&&!c.isNull(0)?Double.valueOf(c.getDouble(0)):null;}finally{c.close();}
+              }
+
+              String annualPdfSummaryV3458(int year){
+                  ensureAnnualPdfTableV3458();java.text.NumberFormat nf=java.text.NumberFormat.getNumberInstance(java.util.Locale.ITALY);nf.setMinimumFractionDigits(2);nf.setMaximumFractionDigits(2);StringBuilder s=new StringBuilder();
+                  double[] p=annualPdfPortfolioValuesV3458(year);if(p[0]>=0||p[1]>=0||p[2]>=0){s.append("PDF patrimonio");if(p[0]>=0)s.append(" • titoli ").append(nf.format(p[0])).append(" €");if(p[1]>=0)s.append(" • liquidità ").append(nf.format(p[1])).append(" €");if(p[2]>=0)s.append(" • totale ").append(nf.format(p[2])).append(" €");}
+                  Double costs=annualPdfCostValueV3458(year,"total_costs"),avg=annualPdfCostValueV3458(year,"average_balance");if(costs!=null){
+                      if(s.length()>0)s.append("\n");s.append("PDF costi/oneri • totale ").append(nf.format(costs)).append(" €");if(avg!=null)s.append(" • giacenza media ").append(nf.format(avg)).append(" €");
+                      Double comm=annualPdfCostValueV3458(year,"brokerage_commissions"),bolli=annualPdfCostValueV3458(year,"stamp_duty"),cg=annualPdfCostValueV3458(year,"cap_gain_tax"),div=annualPdfCostValueV3458(year,"dividend_tax"),tobin=annualPdfCostValueV3458(year,"tobin_tax"),quotes=annualPdfCostValueV3458(year,"realtime_quotes");
+                      if(comm!=null)s.append("\nCommissioni: ").append(nf.format(comm)).append(" €");if(bolli!=null)s.append(" • Bolli: ").append(nf.format(bolli)).append(" €");
+                      if(cg!=null)s.append("\nRitenute capital gain: ").append(nf.format(cg)).append(" €");if(div!=null)s.append(" • Ritenute dividendi: ").append(nf.format(div)).append(" €");
+                      if(tobin!=null)s.append("\nTobin Tax: ").append(nf.format(tobin)).append(" €");if(quotes!=null)s.append(" • Quotazioni real time: ").append(nf.format(quotes)).append(" €");
+                  }
+                  if(s.length()>0)s.append("\nDati documentali: nessun doppio conteggio nel P/L annuale.");return s.toString();
+              }
+          '''
+
+          # Append helpers before the activity class closing brace.
+          last = main.rfind('}')
+          if last<0:raise RuntimeError('MainActivity closing brace not found')
+          main = main[:last] + '\n' + helpers + '\n' + main[last:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+          print('V3.4.58 annual history PDF updater applied')
+          PY58
+          python3 /tmp/make_v3458.py
+
+
+      - name: Patch V3.4.59 Home Performance and PDF log
+        shell: bash
+        run: |
+          cat > /tmp/make_v3459.py <<'PY59'
+          from pathlib import Path
+          import re
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+          main=main_path.read_text(encoding='utf-8'); db=db_path.read_text(encoding='utf-8'); gradle=gradle_path.read_text(encoding='utf-8')
+          assert 'versionCode 100' in gradle and 'versionName \"3.4.58-dev-annual-history-pdf\"' in gradle
+          assert 'DEV 3.4.58' in main and 'DB_VERSION = 17' in db
+          gradle=gradle.replace('versionCode 100','versionCode 101',1)
+          gradle=gradle.replace('versionName \"3.4.58-dev-annual-history-pdf\"','versionName \"3.4.59-dev-history-performance-pdf-log\"',1)
+          main=main.replace('DEV 3.4.58','DEV 3.4.59')
+
+          def matching_brace(t,o):
+              d=0;i=o;ins=inc=lin=blk=False;esc=False
+              while i<len(t):
+                  c=t[i];n=t[i+1] if i+1<len(t) else ''
+                  if lin:
+                      if c=='\\n':lin=False
+                      i+=1;continue
+                  if blk:
+                      if c=='*' and n=='/':blk=False;i+=2;continue
+                      i+=1;continue
+                  if ins:
+                      if esc:esc=False
+                      elif c=='\\\\':esc=True
+                      elif c=='\"':ins=False
+                      i+=1;continue
+                  if inc:
+                      if esc:esc=False
+                      elif c=='\\\\':esc=True
+                      elif c=="'":inc=False
+                      i+=1;continue
+                  if c=='/' and n=='/':lin=True;i+=2;continue
+                  if c=='/' and n=='*':blk=True;i+=2;continue
+                  if c=='\"':ins=True;i+=1;continue
+                  if c=="'":inc=True;i+=1;continue
+                  if c=='{':d+=1
+                  elif c=='}':
+                      d-=1
+                      if d==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced braces')
+
+          anchor='void showHome(){syncCurrentAnnualHistoryV3456();'
+          if anchor not in main: raise RuntimeError('showHome anchor not found')
+          main=main.replace(anchor,'void showHome(){syncCurrentAnnualHistoryV3456();syncHistoricalHomePlV3459();',1)
+
+          old_pdf_stmt='if(annualPdfSummary!=null&&!annualPdfSummary.isEmpty())filter.addView(muted(annualPdfSummary,12));'
+          new_pdf_stmt='if(annualPdfSummary!=null&&!annualPdfSummary.isEmpty()){filter.addView(tv("PDF importati",15,true));filter.addView(muted(annualPdfSummaryV3459(historyYear),12));}'
+          if old_pdf_stmt not in main:
+              raise RuntimeError('PDF summary statement not found')
+          main=main.replace(old_pdf_stmt,new_pdf_stmt,1)
+
+
+          dh=main.find('boolean annualPdfSameHashV3458(AnnualPdfParsedV3458 p){')
+          if dh<0: raise RuntimeError('annualPdfSameHashV3458 not found')
+          dho=main.find('{',dh); dhc=matching_brace(main,dho)
+          duplicate_method=r'''boolean annualPdfSameHashV3458(AnnualPdfParsedV3458 p){
+                  ensureAnnualPdfTableV3458();
+                  ensureAnnualPdfLogV3459();
+                  android.database.Cursor c=db.getReadableDatabase().rawQuery(
+                      "SELECT 1 FROM annual_pdf_log WHERE doc_hash=? LIMIT 1",
+                      new String[]{p.hash}
+                  );
+                  try{return c.moveToFirst();}finally{c.close();}
+              }'''
+          main=main[:dh]+duplicate_method+main[dhc+1:]
+
+          ss=main.find('void saveAnnualPdfV3458(AnnualPdfParsedV3458 p){')
+          if ss<0: raise RuntimeError('saveAnnualPdfV3458 not found')
+          so=main.find('{',ss); sc=matching_brace(main,so); save=main[ss:sc+1]
+          save=save.replace('ensureAnnualPdfTableV3458();android.database.sqlite.SQLiteDatabase w=db.getWritableDatabase();','ensureAnnualPdfTableV3458();ensureAnnualPdfLogV3459();android.database.sqlite.SQLiteDatabase w=db.getWritableDatabase();',1)
+          ia='w.insertWithOnConflict(\"annual_pdf_data\",null,cv,android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE);'
+          if ia not in save: raise RuntimeError('PDF insert anchor not found')
+          save=save.replace(ia,ia+'android.content.ContentValues lg=new android.content.ContentValues();lg.put(\"year\",p.year);lg.put(\"doc_type\",p.docType);lg.put(\"doc_hash\",p.hash);lg.put(\"doc_name\",p.name);lg.put(\"imported_at\",new java.text.SimpleDateFormat(\"yyyy-MM-dd HH:mm\",java.util.Locale.ITALY).format(new java.util.Date()));w.insertWithOnConflict(\"annual_pdf_log\",null,lg,android.database.sqlite.SQLiteDatabase.CONFLICT_IGNORE);',1)
+          main=main[:ss]+save+main[sc+1:]
+
+          # Locate the annual Performance call by the actual
+          # grossPerformanceForYear(...) + addPerformanceCostsSummary(...) sequence.
+          candidates=[]
+          pos=0
+          token='grossPerformanceForYear('
+          while True:
+              gy=main.find(token,pos)
+              if gy<0:
+                  break
+              arg_start=gy+len(token)
+              arg_end=main.find(')',arg_start)
+              if arg_end>arg_start:
+                  args=[a.strip() for a in main[arg_start:arg_end].split(',')]
+                  ac=main.find('addPerformanceCostsSummary(',arg_end,min(len(main),arg_end+2500))
+                  if len(args)>=2:
+                      year_arg=args[1]
+                      if re.fullmatch(r'[A-Za-z_]\w*',year_arg) and ac>=0:
+                          candidates.append((gy,ac,year_arg))
+              pos=gy+len(token)
+
+          if not candidates:
+              raise RuntimeError('annual performance branch not found')
+
+          gy,ac,yp=candidates[0]
+          semi=main.find(';',ac)
+          if semi<0 or semi-ac>1800:
+              raise RuntimeError('annual performance summary statement not closed')
+
+          perf_stmt=main[ac:semi+1]
+          wrapped='if(!('+yp+'!=dataYear()&&addHistoricalPerformanceSummaryV3459('+yp+'))){'+perf_stmt+'}'
+          main=main[:ac]+wrapped+main[semi+1:]
+
+
+          helpers=r'''
+              void syncHistoricalHomePlV3459(){
+                  db.getWritableDatabase().execSQL("UPDATE annual_history SET portfolio_profit=overall_result WHERE overall_result IS NOT NULL AND (portfolio_profit IS NULL OR ABS(portfolio_profit-overall_result)>0.0001)");
+              }
+              void ensureAnnualPdfLogV3459(){
+                  android.database.sqlite.SQLiteDatabase w=db.getWritableDatabase();
+                  w.execSQL("CREATE TABLE IF NOT EXISTS annual_pdf_log(year INTEGER NOT NULL,doc_type TEXT NOT NULL,doc_hash TEXT NOT NULL PRIMARY KEY,doc_name TEXT,imported_at TEXT)");
+                  w.execSQL("INSERT OR IGNORE INTO annual_pdf_log(year,doc_type,doc_hash,doc_name,imported_at) SELECT year,doc_type,doc_hash,doc_name,imported_at FROM annual_pdf_data WHERE doc_hash IS NOT NULL AND TRIM(doc_hash)<>''");
+              }
+              String formatPdfImportDateV3459(String raw){try{java.text.SimpleDateFormat a=new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm",java.util.Locale.ITALY);java.text.SimpleDateFormat b=new java.text.SimpleDateFormat("dd/MM/yyyy HH:mm",java.util.Locale.ITALY);return b.format(a.parse(raw));}catch(Exception e){return raw;}}
+              String annualPdfSummaryV3459(int year){
+                  ensureAnnualPdfTableV3458();ensureAnnualPdfLogV3459();StringBuilder s=new StringBuilder();int count=0;
+                  android.database.Cursor c=db.getReadableDatabase().rawQuery("SELECT doc_type,doc_name,imported_at FROM annual_pdf_log WHERE year=? ORDER BY imported_at,doc_type",new String[]{String.valueOf(year)});
+                  try{while(c.moveToNext()){count++;String type=c.isNull(0)?"PDF":c.getString(0),name=c.isNull(1)?"Documento PDF":c.getString(1),when=c.isNull(2)?"":c.getString(2);if(s.length()>0)s.append("\\n");s.append("• ").append("PATRIMONIO".equals(type)?"Situazione patrimoniale":"COSTI".equals(type)?"Costi/oneri":type).append(" — ").append(name);if(!when.isEmpty())s.append("\\n  Importato: ").append(formatPdfImportDateV3459(when));}}finally{c.close();}
+                  if(count==0)return "";String values=annualPdfSummaryV3458(year);if(values!=null&&!values.isEmpty())s.append("\\n\\nDati acquisiti attuali\\n").append(values);return s.toString();
+              }
+              boolean addHistoricalPerformanceSummaryV3459(int year){
+                  if(year==dataYear())return false;Cursor c=db.annualHistory();Double gross=null,loss=null,recovery=null,overall=null,rr=null;boolean found=false;
+                  try{while(c.moveToNext()){if(c.getInt(c.getColumnIndexOrThrow("year"))!=year)continue;found=true;gross=getNullable(c,"gross_income");loss=getNullable(c,"annual_loss");recovery=getNullable(c,"fiscal_recovery");overall=getNullable(c,"overall_result");rr=getNullable(c,"return_rate");break;}}finally{c.close();}
+                  if(!found)return false;LinearLayout box=card();box.addView(sectionTitle("Riepilogo annuale storico"));box.addView(muted("Dati aggregati "+year+": non vengono inventati movimenti o valori mensili mancanti.",12));StringBuilder sb=new StringBuilder();
+                  if(gross!=null)sb.append("Proventi lordi: ").append(euro.format(gross)).append(" €");if(loss!=null&&Math.abs(loss)>0.0001){if(sb.length()>0)sb.append("\\n");sb.append("Perdita / minus: -").append(euro.format(Math.abs(loss))).append(" €");}if(recovery!=null&&Math.abs(recovery)>0.0001){if(sb.length()>0)sb.append("\\n");sb.append("Recupero fiscale: +").append(euro.format(Math.abs(recovery))).append(" €");}if(overall!=null){if(sb.length()>0)sb.append("\\n");sb.append("Risultato complessivo: ").append(overall>0?"+":"").append(euro.format(overall)).append(" €");}if(rr!=null){if(sb.length()>0)sb.append("\\n");sb.append("Rendimento annuale: ").append(pct.format(rr));}
+                  Double dc=annualPdfCostValueV3458(year,"total_costs");if(dc!=null){sb.append("\\n\\nCosti/oneri da PDF: ").append(euro.format(dc)).append(" €");sb.append("\\nDato documentale: non sottratto automaticamente dal risultato per evitare doppi conteggi.");}box.addView(tv(sb.toString(),14,true));content.addView(box);return true;
+              }
+          '''
+          last=main.rfind('}')
+          main=main[:last]+'\n'+helpers+'\n'+main[last:]
+          main_path.write_text(main,encoding='utf-8');gradle_path.write_text(gradle,encoding='utf-8')
+          print('V3.4.59 patch applied')
+          PY59
+          python3 /tmp/make_v3459.py
+
+
+      - name: Patch V3.4.60 readability formatting and navigation
+        shell: bash
+        run: |
+          cat > /tmp/make_v3460.py <<'PY60'
+          from pathlib import Path
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db=db_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          assert 'versionCode 101' in gradle
+          assert 'versionName "3.4.59-dev-history-performance-pdf-log"' in gradle
+          assert 'DEV 3.4.59' in main
+          assert 'DB_VERSION = 17' in db
+
+          gradle=gradle.replace('versionCode 101','versionCode 102',1)
+          gradle=gradle.replace(
+              'versionName "3.4.59-dev-history-performance-pdf-log"',
+              'versionName "3.4.60-dev-readability-formatting-navigation"',
+              1
+          )
+          main=main.replace('DEV 3.4.59','DEV 3.4.60',1)
+
+          def matching_brace(t,o):
+              d=0;i=o;ins=inc=lin=blk=False;esc=False
+              while i<len(t):
+                  c=t[i];n=t[i+1] if i+1<len(t) else ''
+                  if lin:
+                      if c=='\n':lin=False
+                      i+=1;continue
+                  if blk:
+                      if c=='*' and n=='/':blk=False;i+=2;continue
+                      i+=1;continue
+                  if ins:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='"':ins=False
+                      i+=1;continue
+                  if inc:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":inc=False
+                      i+=1;continue
+                  if c=='/' and n=='/':lin=True;i+=2;continue
+                  if c=='/' and n=='*':blk=True;i+=2;continue
+                  if c=='"':ins=True;i+=1;continue
+                  if c=="'":inc=True;i+=1;continue
+                  if c=='{':d+=1
+                  elif c=='}':
+                      d-=1
+                      if d==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          def patch_display_newlines(method_signature):
+              global main
+              p=main.find(method_signature)
+              if p<0:
+                  raise RuntimeError(method_signature+' not found')
+              o=main.find('{',p);c=matching_brace(main,o)
+              body=main[p:c+1]
+              fixed=body.replace(r'\\n',r'\n')
+              if fixed==body:
+                  raise RuntimeError('No escaped display newlines found in '+method_signature)
+              main=main[:p]+fixed+main[c+1:]
+
+          patch_display_newlines('String annualPdfSummaryV3459(int year)')
+          patch_display_newlines('boolean addHistoricalPerformanceSummaryV3459(int year)')
+
+          hs=main.find('void showHome(){')
+          if hs<0:raise RuntimeError('showHome not found')
+          ho=main.find('{',hs);hc=matching_brace(main,ho)
+          home=main[hs:hc+1]
+          if 'improveHomeHistoryReadabilityV3460();' not in home:
+              home=home[:-1]+'improveHomeHistoryReadabilityV3460();}'
+          main=main[:hs]+home+main[hc+1:]
+
+          ns=main.find('void setNavActive(')
+          if ns<0:raise RuntimeError('setNavActive not found')
+          no=main.find('{',ns);nc=matching_brace(main,no)
+          nav=main[ns:nc+1]
+          if 'fixBottomNavLabelsV3460();' not in nav:
+              nav=nav[:-1]+'fixBottomNavLabelsV3460();}'
+          main=main[:ns]+nav+main[nc+1:]
+
+          helpers=r'''
+              void improveHomeHistoryReadabilityV3460(){
+                  if(content!=null)styleHomeHistoryTreeV3460(content);
+              }
+
+              void styleHomeHistoryTreeV3460(android.view.View v){
+                  if(v instanceof android.widget.TextView){
+                      android.widget.TextView t=(android.widget.TextView)v;
+                      CharSequence q=t.getText();
+                      String s=q==null?"":q.toString();
+
+                      if("Riepilogo storico".equals(s.trim())){
+                          t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP,20f);
+                          t.setTextColor(android.graphics.Color.WHITE);
+                          t.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);
+                      }else if(s.startsWith("Rendimento reale:")){
+                          t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP,15f);
+                          t.setTextColor(android.graphics.Color.WHITE);
+                          t.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);
+                          t.setLineSpacing(0f,1.12f);
+                      }else if(s.contains("proventi")&&s.contains("P/L")&&s.matches("(?s).*20\\d{2}.*")){
+                          String formatted=formatHomeHistoryLinesV3460(s);
+                          if(formatted!=null&&!formatted.isEmpty())t.setText(formatted);
+                          t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP,16f);
+                          t.setTextColor(android.graphics.Color.WHITE);
+                          t.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);
+                          t.setLineSpacing(0f,1.18f);
+                      }
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++)styleHomeHistoryTreeV3460(g.getChildAt(i));
+                  }
+              }
+
+              String formatHomeHistoryLinesV3460(String raw){
+                  java.util.regex.Pattern p=java.util.regex.Pattern.compile(
+                      "(20\\d{2})\\s*•\\s*proventi\\s*([^•\\n]+)\\s*•\\s*P/L\\s*([^•\\n]+)\\s*•\\s*([+\\-]?[0-9.,]+%)",
+                      java.util.regex.Pattern.CASE_INSENSITIVE
+                  );
+                  java.util.regex.Matcher m=p.matcher(raw);
+                  StringBuffer out=new StringBuffer();
+                  int count=0;
+                  while(m.find()){
+                      String r=(count>0?"\n":"")
+                          +m.group(1)
+                          +"\nProventi: "+m.group(2).trim()
+                          +"\nP/L: "+m.group(3).trim()
+                          +"\nRendimento: "+m.group(4).trim();
+                      m.appendReplacement(out,java.util.regex.Matcher.quoteReplacement(r));
+                      count++;
+                  }
+                  m.appendTail(out);
+                  return count==0?raw:out.toString().trim();
+              }
+
+              void fixBottomNavLabelsV3460(){
+                  if(bottomNav!=null)styleBottomNavTreeV3460(bottomNav);
+              }
+
+              void styleBottomNavTreeV3460(android.view.View v){
+                  if(v instanceof android.widget.TextView){
+                      android.widget.TextView t=(android.widget.TextView)v;
+                      CharSequence q=t.getText();
+                      String s=q==null?"":q.toString().trim();
+                      boolean label="Home".equals(s)||"Portafogli".equals(s)||"Proventi".equals(s)||
+                          "Movimenti".equals(s)||s.startsWith("Movimen")||"Altro".equals(s);
+                      if(label){
+                          if(s.startsWith("Movimen")&&!"Movimenti".equals(s))t.setText("Movimenti");
+                          t.setSingleLine(true);
+                          t.setMaxLines(1);
+                          if(android.os.Build.VERSION.SDK_INT>=26){
+                              t.setAutoSizeTextTypeUniformWithConfiguration(
+                                  10,15,1,android.util.TypedValue.COMPLEX_UNIT_SP
+                              );
+                          }else{
+                              t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP,13f);
+                          }
+                          t.setGravity(android.view.Gravity.CENTER);
+                      }
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++)styleBottomNavTreeV3460(g.getChildAt(i));
+                  }
+              }
+          '''
+
+          last=main.rfind('}')
+          if last<0:raise RuntimeError('MainActivity closing brace not found')
+          main=main[:last]+'\n'+helpers+'\n'+main[last:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+          print('V3.4.60 readability / newline / navigation patch applied')
+          PY60
+          python3 /tmp/make_v3460.py
+
+
+      - name: Patch V3.4.61 historical performance layout and remaining UI fixes
+        shell: bash
+        run: |
+          cat > /tmp/make_v3461.py <<'PY61'
+          from pathlib import Path
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db=db_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          assert 'versionCode 102' in gradle
+          assert 'versionName "3.4.60-dev-readability-formatting-navigation"' in gradle
+          assert 'DB_VERSION = 17' in db
+
+          gradle=gradle.replace('versionCode 102','versionCode 103',1)
+          gradle=gradle.replace(
+              'versionName "3.4.60-dev-readability-formatting-navigation"',
+              'versionName "3.4.61-dev-historical-performance-layout"',
+              1
+          )
+
+          # V3.4.60 still contained more than one old visible version string.
+          # Replace all visible DEV labels, not only the first occurrence.
+          main=main.replace('DEV 3.4.59','DEV 3.4.61')
+          main=main.replace('DEV 3.4.60','DEV 3.4.61')
+
+          def matching_brace(t,o):
+              d=0;i=o;ins=inc=lin=blk=False;esc=False
+              while i<len(t):
+                  c=t[i];n=t[i+1] if i+1<len(t) else ''
+                  if lin:
+                      if c=='\n':lin=False
+                      i+=1;continue
+                  if blk:
+                      if c=='*' and n=='/':blk=False;i+=2;continue
+                      i+=1;continue
+                  if ins:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='"':ins=False
+                      i+=1;continue
+                  if inc:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":inc=False
+                      i+=1;continue
+                  if c=='/' and n=='/':lin=True;i+=2;continue
+                  if c=='/' and n=='*':blk=True;i+=2;continue
+                  if c=='"':ins=True;i+=1;continue
+                  if c=="'":inc=True;i+=1;continue
+                  if c=='{':d+=1
+                  elif c=='}':
+                      d-=1
+                      if d==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          # Replace only the historical-year Performance renderer.
+          sig='boolean addHistoricalPerformanceSummaryV3459(int year)'
+          p=main.find(sig)
+          if p<0:raise RuntimeError('Historical performance method not found')
+          o=main.find('{',p);c=matching_brace(main,o)
+
+          replacement=r'''boolean addHistoricalPerformanceSummaryV3459(int year){
+                  if(year==dataYear())return false;
+
+                  Cursor c=db.annualHistory();
+                  Double gross=null,loss=null,recovery=null,overall=null,rr=null;
+                  boolean found=false;
+                  try{
+                      while(c.moveToNext()){
+                          if(c.getInt(c.getColumnIndexOrThrow("year"))!=year)continue;
+                          found=true;
+                          gross=getNullable(c,"gross_income");
+                          loss=getNullable(c,"annual_loss");
+                          recovery=getNullable(c,"fiscal_recovery");
+                          overall=getNullable(c,"overall_result");
+                          rr=getNullable(c,"return_rate");
+                          break;
+                      }
+                  }finally{c.close();}
+                  if(!found)return false;
+
+                  // Hero card: same visual hierarchy as the current-year annual Performance.
+                  LinearLayout hero=card();
+                  TextView y=tv(String.valueOf(year),20,true);
+                  y.setGravity(android.view.Gravity.CENTER);
+                  y.setTextColor(android.graphics.Color.rgb(47,128,237));
+                  hero.addView(y);
+
+                  Double headline=gross!=null?gross:overall;
+                  if(headline!=null){
+                      TextView h=tv(euro.format(headline)+" €",22,true);
+                      h.setGravity(android.view.Gravity.CENTER);
+                      h.setTextColor(headline>=0
+                          ?android.graphics.Color.rgb(21,201,136)
+                          :android.graphics.Color.rgb(255,82,82));
+                      LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          LinearLayout.LayoutParams.WRAP_CONTENT
+                      );
+                      hp.topMargin=dp(8);
+                      h.setLayoutParams(hp);
+                      hero.addView(h);
+                  }
+                  content.addView(hero);
+
+                  // Compact numerical card: no long explanatory paragraph.
+                  LinearLayout box=card();
+
+                  if(gross!=null){
+                      TextView r=tv("Lordo  "+euro.format(gross)+" €",16,true);
+                      r.setTextColor(android.graphics.Color.WHITE);
+                      box.addView(r);
+                  }
+
+                  if(loss!=null&&Math.abs(loss)>0.0001){
+                      TextView r=tv("Perdita / minus  -"+euro.format(Math.abs(loss))+" €",16,true);
+                      r.setTextColor(android.graphics.Color.rgb(255,82,82));
+                      box.addView(r);
+                  }
+
+                  if(recovery!=null&&Math.abs(recovery)>0.0001){
+                      TextView r=tv("Recupero fiscale  +"+euro.format(Math.abs(recovery))+" €",16,true);
+                      r.setTextColor(android.graphics.Color.rgb(21,201,136));
+                      box.addView(r);
+                  }
+
+                  if(overall!=null){
+                      TextView r=tv("Risultato complessivo  "+(overall>0?"+":"")+euro.format(overall)+" €",16,true);
+                      r.setTextColor(overall>=0
+                          ?android.graphics.Color.rgb(21,201,136)
+                          :android.graphics.Color.rgb(255,82,82));
+                      box.addView(r);
+                  }
+
+                  if(rr!=null){
+                      TextView r=tv("Rendimento  "+pct.format(rr),16,true);
+                      r.setTextColor(android.graphics.Color.WHITE);
+                      box.addView(r);
+                  }
+
+                  content.addView(box);
+
+                  LinearLayout note=card();
+                  TextView nt=muted(
+                      "Storico annuale aggregato: il dettaglio mensile non è disponibile e non viene inventato.",
+                      12
+                  );
+                  nt.setTextColor(android.graphics.Color.WHITE);
+                  note.addView(nt);
+
+                  Double dc=annualPdfCostValueV3458(year,"total_costs");
+                  if(dc!=null){
+                      TextView pdf=muted(
+                          "Costi/oneri PDF: "+euro.format(dc)+" € • dato documentale, non sottratto automaticamente.",
+                          12
+                      );
+                      pdf.setTextColor(android.graphics.Color.WHITE);
+                      note.addView(pdf);
+                  }
+                  content.addView(note);
+                  return true;
+              }'''
+
+          main=main[:p]+replacement+main[c+1:]
+
+          # Make the bottom label fit for real: use a smaller explicit size for Movimenti.
+          # This is applied after the V3.4.60 generic style helper.
+          old='if(s.startsWith("Movimen")&&!"Movimenti".equals(s))t.setText("Movimenti");'
+          if old in main:
+              new=old+'''
+                          if(t.getText()!=null&&t.getText().toString().startsWith("Movimen")){
+                              t.setText("Movimenti");
+                              t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP,11f);
+                              t.setScaleX(0.94f);
+                              t.setEllipsize(null);
+                          }'''
+              main=main.replace(old,new,1)
+          else:
+              raise RuntimeError('Movimenti styling hook not found')
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+          print('V3.4.61 historical Performance layout and remaining UI fixes applied')
+          PY61
+          python3 /tmp/make_v3461.py
+
+
+      - name: Patch V3.4.62 historical close performance and navigation
+        shell: bash
+        run: |
+          cat > /tmp/make_v3462.py <<'PY62'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db=db_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          assert 'versionCode 103' in gradle
+          assert 'versionName "3.4.61-dev-historical-performance-layout"' in gradle
+          assert 'DB_VERSION = 17' in db
+
+          gradle=gradle.replace('versionCode 103','versionCode 104',1)
+          gradle=gradle.replace(
+              'versionName "3.4.61-dev-historical-performance-layout"',
+              'versionName "3.4.62-dev-historical-close-performance-nav"',
+              1
+          )
+
+          main=main.replace('DEV 3.4.61','DEV 3.4.62')
+
+          # Replace the actually truncated source labels, not only their runtime style.
+          main=main.replace('"Portafogl"','"Portafogli"')
+          main=main.replace('"Movimen"','"Movimenti"')
+
+          def matching_brace(t,o):
+              d=0;i=o;ins=inc=lin=blk=False;esc=False
+              while i<len(t):
+                  c=t[i];n=t[i+1] if i+1<len(t) else ''
+                  if lin:
+                      if c=='\n':lin=False
+                      i+=1;continue
+                  if blk:
+                      if c=='*' and n=='/':blk=False;i+=2;continue
+                      i+=1;continue
+                  if ins:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='"':ins=False
+                      i+=1;continue
+                  if inc:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":inc=False
+                      i+=1;continue
+                  if c=='/' and n=='/':lin=True;i+=2;continue
+                  if c=='/' and n=='*':blk=True;i+=2;continue
+                  if c=='"':ins=True;i+=1;continue
+                  if c=="'":inc=True;i+=1;continue
+                  if c=='{':d+=1
+                  elif c=='}':
+                      d-=1
+                      if d==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          # Historical annual Performance: use the existing year/arrows card.
+          # No second duplicate "2025" card is created.
+          sig='boolean addHistoricalPerformanceSummaryV3459(int year)'
+          p=main.find(sig)
+          if p<0:raise RuntimeError('Historical performance method not found')
+          o=main.find('{',p);c=matching_brace(main,o)
+
+          replacement=r'''boolean addHistoricalPerformanceSummaryV3459(int year){
+                  if(year==dataYear())return false;
+
+                  Cursor c=db.annualHistory();
+                  Double gross=null,loss=null,recovery=null,overall=null,rr=null;
+                  boolean found=false;
+                  try{
+                      while(c.moveToNext()){
+                          if(c.getInt(c.getColumnIndexOrThrow("year"))!=year)continue;
+                          found=true;
+                          gross=getNullable(c,"gross_income");
+                          loss=getNullable(c,"annual_loss");
+                          recovery=getNullable(c,"fiscal_recovery");
+                          overall=getNullable(c,"overall_result");
+                          rr=getNullable(c,"return_rate");
+                          break;
+                      }
+                  }finally{c.close();}
+                  if(!found)return false;
+
+                  Double headline=gross!=null?gross:overall;
+                  decorateHistoricalPerformanceYearV3462(year,headline);
+
+                  LinearLayout box=card();
+
+                  if(gross!=null){
+                      TextView r=tv("Lordo  "+euro.format(gross)+" €",16,true);
+                      r.setTextColor(android.graphics.Color.WHITE);
+                      box.addView(r);
+                  }
+
+                  if(loss!=null&&Math.abs(loss)>0.0001){
+                      TextView r=tv("Perdita / minus  -"+euro.format(Math.abs(loss))+" €",16,true);
+                      r.setTextColor(android.graphics.Color.rgb(255,82,82));
+                      box.addView(r);
+                  }
+
+                  if(recovery!=null&&Math.abs(recovery)>0.0001){
+                      TextView r=tv("Recupero fiscale  +"+euro.format(Math.abs(recovery))+" €",16,true);
+                      r.setTextColor(android.graphics.Color.rgb(21,201,136));
+                      box.addView(r);
+                  }
+
+                  if(overall!=null){
+                      TextView r=tv("Risultato complessivo  "+(overall>0?"+":"")+euro.format(overall)+" €",16,true);
+                      r.setTextColor(overall>=0
+                          ?android.graphics.Color.rgb(21,201,136)
+                          :android.graphics.Color.rgb(255,82,82));
+                      box.addView(r);
+                  }
+
+                  if(rr!=null){
+                      TextView r=tv("Rendimento  "+pct.format(rr),16,true);
+                      r.setTextColor(android.graphics.Color.WHITE);
+                      box.addView(r);
+                  }
+
+                  content.addView(box);
+
+                  LinearLayout note=card();
+                  TextView nt=muted(
+                      "Storico annuale aggregato: dettaglio mensile non disponibile.",
+                      12
+                  );
+                  nt.setTextColor(android.graphics.Color.WHITE);
+                  note.addView(nt);
+
+                  Double dc=annualPdfCostValueV3458(year,"total_costs");
+                  if(dc!=null){
+                      TextView pdf=muted(
+                          "Costi/oneri PDF: "+euro.format(dc)+" € • dato documentale, non sottratto automaticamente.",
+                          12
+                      );
+                      pdf.setTextColor(android.graphics.Color.WHITE);
+                      note.addView(pdf);
+                  }
+                  content.addView(note);
+                  return true;
+              }'''
+          main=main[:p]+replacement+main[c+1:]
+
+          # Make long bottom-navigation labels genuinely fit.
+          nav_sig='void styleBottomNavTreeV3460(android.view.View v)'
+          np=main.find(nav_sig)
+          if np<0:raise RuntimeError('Bottom nav style helper not found')
+          no=main.find('{',np);nc=matching_brace(main,no)
+          nav_body=main[np:nc+1]
+          gravity='t.setGravity(android.view.Gravity.CENTER);'
+          if gravity not in nav_body:
+              raise RuntimeError('Bottom nav gravity marker not found')
+          nav_extra=r'''
+                          if("Portafogli".equals(t.getText().toString().trim())||
+                             "Movimenti".equals(t.getText().toString().trim())){
+                              if(android.os.Build.VERSION.SDK_INT>=26){
+                                  t.setAutoSizeTextTypeWithDefaults(android.widget.TextView.AUTO_SIZE_TEXT_TYPE_NONE);
+                              }
+                              t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP,10f);
+                              t.setScaleX(0.90f);
+                              t.setEllipsize(null);
+                              t.setIncludeFontPadding(false);
+                          }
+          '''
+          nav_body=nav_body.replace(gravity,nav_extra+'\n                          '+gravity,1)
+          main=main[:np]+nav_body+main[nc+1:]
+
+          # Run historical safety after Storico has finished creating its views.
+          m=re.search(r'\bvoid\s+showHistory\s*\(\s*\)\s*\{',main)
+          if not m:raise RuntimeError('showHistory method not found')
+          ho=main.find('{',m.start());hc=matching_brace(main,ho)
+          hist_method=main[m.start():hc+1]
+          if 'applyHistoricalUiSafetyV3462();' not in hist_method:
+              hist_method=hist_method[:-1]+'''
+                  if(content!=null){
+                      content.post(new Runnable(){
+                          @Override public void run(){ applyHistoricalUiSafetyV3462(); }
+                      });
+                  }
+              }'''
+          main=main[:m.start()]+hist_method+main[hc+1:]
+
+          helpers=r'''
+              void decorateHistoricalPerformanceYearV3462(int year,Double headline){
+                  if(content==null)return;
+                  decorateHistoricalPerformanceYearTreeV3462(content,year,headline);
+              }
+
+              boolean decorateHistoricalPerformanceYearTreeV3462(android.view.View v,int year,Double headline){
+                  if(v instanceof android.widget.TextView){
+                      android.widget.TextView t=(android.widget.TextView)v;
+                      CharSequence q=t.getText();
+                      String s=q==null?"":q.toString().trim();
+                      if(s.equals(String.valueOf(year))){
+                          String amount=headline==null?"":("\n"+euro.format(headline)+" €");
+                          android.text.SpannableString sp=
+                              new android.text.SpannableString(String.valueOf(year)+amount);
+                          int yearLen=String.valueOf(year).length();
+                          sp.setSpan(
+                              new android.text.style.ForegroundColorSpan(android.graphics.Color.rgb(47,128,237)),
+                              0,yearLen,android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                          );
+                          sp.setSpan(
+                              new android.text.style.StyleSpan(android.graphics.Typeface.BOLD),
+                              0,yearLen,android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                          );
+                          if(amount.length()>0){
+                              int start=yearLen+1;
+                              int col=headline!=null&&headline<0
+                                  ?android.graphics.Color.rgb(255,82,82)
+                                  :android.graphics.Color.rgb(21,201,136);
+                              sp.setSpan(
+                                  new android.text.style.ForegroundColorSpan(col),
+                                  start,sp.length(),android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                              );
+                              sp.setSpan(
+                                  new android.text.style.StyleSpan(android.graphics.Typeface.BOLD),
+                                  start,sp.length(),android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                              );
+                          }
+                          t.setText(sp);
+                          t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP,20f);
+                          t.setGravity(android.view.Gravity.CENTER);
+                          t.setLineSpacing(dp(4),1.08f);
+                          return true;
+                      }
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++){
+                          if(decorateHistoricalPerformanceYearTreeV3462(g.getChildAt(i),year,headline))return true;
+                      }
+                  }
+                  return false;
+              }
+
+              void ensureHistoricalCloseStateV3462(){
+                  db.getWritableDatabase().execSQL(
+                      "CREATE TABLE IF NOT EXISTS annual_history_state("+
+                      "year INTEGER PRIMARY KEY,"+
+                      "is_closed INTEGER NOT NULL DEFAULT 0,"+
+                      "closed_at TEXT)"
+                  );
+              }
+
+              boolean historicalYearClosedV3462(int year){
+                  ensureHistoricalCloseStateV3462();
+                  android.database.Cursor c=db.getReadableDatabase().rawQuery(
+                      "SELECT is_closed FROM annual_history_state WHERE year=?",
+                      new String[]{String.valueOf(year)}
+                  );
+                  try{return c.moveToFirst()&&c.getInt(0)==1;}finally{c.close();}
+              }
+
+              void closeHistoricalAggregateYearV3462(final int year){
+                  ensureHistoricalCloseStateV3462();
+                  android.content.ContentValues v=new android.content.ContentValues();
+                  v.put("year",year);
+                  v.put("is_closed",1);
+                  v.put("closed_at",new java.text.SimpleDateFormat(
+                      "yyyy-MM-dd HH:mm:ss",java.util.Locale.ITALY
+                  ).format(new java.util.Date()));
+                  db.getWritableDatabase().insertWithOnConflict(
+                      "annual_history_state",null,v,
+                      android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE
+                  );
+                  android.widget.Toast.makeText(
+                      this,
+                      "Anno "+year+" chiuso come storico aggregato.",
+                      android.widget.Toast.LENGTH_SHORT
+                  ).show();
+                  showHistory();
+              }
+
+              int historicalYearFromTreeV3462(android.view.View v){
+                  if(v instanceof android.widget.TextView){
+                      CharSequence q=((android.widget.TextView)v).getText();
+                      String s=q==null?"":q.toString().trim();
+                      java.util.regex.Matcher m=java.util.regex.Pattern.compile(
+                          "(?:Chiudi anno\\s+|Anno\\s+|Dettaglio mensile\\s+)(20\\d{2})"
+                      ).matcher(s);
+                      if(m.find()){
+                          try{return Integer.parseInt(m.group(1));}catch(Exception ignored){}
+                      }
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++){
+                          int y=historicalYearFromTreeV3462(g.getChildAt(i));
+                          if(y>0)return y;
+                      }
+                  }
+                  return -1;
+              }
+
+              void applyHistoricalUiSafetyV3462(){
+                  if(content==null)return;
+                  int year=historicalYearFromTreeV3462(content);
+                  if(year<=0||year==dataYear())return;
+                  boolean closed=historicalYearClosedV3462(year);
+                  applyHistoricalUiSafetyTreeV3462(content,year,closed);
+              }
+
+              void applyHistoricalUiSafetyTreeV3462(android.view.View v,final int year,boolean closed){
+                  if(v instanceof android.widget.TextView){
+                      final android.widget.TextView t=(android.widget.TextView)v;
+                      CharSequence q=t.getText();
+                      String s=q==null?"":q.toString().trim();
+
+                      if(s.startsWith("Dettaglio mensile "+year)){
+                          android.view.ViewParent p=t.getParent();
+                          if(p instanceof android.view.View){
+                              ((android.view.View)p).setVisibility(android.view.View.GONE);
+                          }else{
+                              t.setVisibility(android.view.View.GONE);
+                          }
+                          return;
+                      }
+
+                      if(s.equals("Chiudi anno "+year)||s.equals("Anno "+year+" CHIUSO")){
+                          if(closed){
+                              t.setText("Anno "+year+" CHIUSO");
+                              t.setEnabled(false);
+                              t.setAlpha(1f);
+                          }else{
+                              t.setText("Chiudi anno "+year);
+                              t.setEnabled(true);
+                              t.setOnClickListener(new android.view.View.OnClickListener(){
+                                  @Override public void onClick(android.view.View view){
+                                      new android.app.AlertDialog.Builder(MainActivity.this)
+                                          .setTitle("Chiudi anno "+year)
+                                          .setMessage(
+                                              "L'anno verrà marcato come storico aggregato chiuso. "+
+                                              "Patrimonio, proventi, perdita/minus, recupero fiscale, "+
+                                              "risultato complessivo e dati PDF resteranno invariati. "+
+                                              "Non verranno inventati movimenti mensili né ricalcolati i costi."
+                                          )
+                                          .setNegativeButton("Annulla",null)
+                                          .setPositiveButton("Chiudi anno",new android.content.DialogInterface.OnClickListener(){
+                                              @Override public void onClick(android.content.DialogInterface d,int which){
+                                                  closeHistoricalAggregateYearV3462(year);
+                                              }
+                                          })
+                                          .show();
+                                  }
+                              });
+                          }
+                      }
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++){
+                          applyHistoricalUiSafetyTreeV3462(g.getChildAt(i),year,closed);
+                      }
+                  }
+              }
+          '''
+
+          last=main.rfind('}')
+          if last<0:raise RuntimeError('MainActivity closing brace not found')
+          main=main[:last]+'\n'+helpers+'\n'+main[last:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+          print('V3.4.62 patch applied')
+          PY62
+          python3 /tmp/make_v3462.py
+
+      - name: Verify V3.4.62 source
+        run: |
+          set -e
+          MAIN="android-project-v3460/app/src/main/java/it/portafoglio2026/v3/MainActivity.java"
+          DB="android-project-v3460/app/src/main/java/it/portafoglio2026/v3/DbHelper.java"
+          GRADLE="android-project-v3460/app/build.gradle"
+
+          grep -Fq 'applicationId "it.portafoglio2026.v32"' "$GRADLE"
+          grep -Fq 'versionCode 104' "$GRADLE"
+          grep -Fq 'versionName "3.4.62-dev-historical-close-performance-nav"' "$GRADLE"
+          grep -Fq "com.tom-roush:pdfbox-android:2.0.27.0" "$GRADLE"
+          grep -Fq 'DB_VERSION = 17' "$DB"
+          grep -Fq 'DEV 3.4.62' "$MAIN"
+          grep -Fq 'Aggiorna anno da PDF' "$MAIN"
+          grep -Fq 'handleAnnualPdfResultV3458(resultCode,data);' "$MAIN"
+          grep -Fq 'void handleAnnualPdfResultV3458' "$MAIN"
+          grep -Fq 'CREATE TABLE IF NOT EXISTS annual_pdf_data' "$MAIN"
+          grep -Fq 'PRIMARY KEY(year,doc_type)' "$MAIN"
+          grep -Fq 'PDF già importato' "$MAIN"
+          grep -Fq 'Nessun nuovo record annuale è stato creato' "$MAIN"
+          grep -Fq 'if(overall!=null)cv.put("portfolio_profit",overall);' "$MAIN"
+          grep -Fq 'Double.valueOf(autoGross)' "$MAIN"
+          grep -Fq 'history_year_filter' "$MAIN"
+          grep -Fq 'setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD)' "$MAIN"
+          grep -Fq 'syncHistoricalHomePlV3459' "$MAIN"
+          grep -Fq 'CREATE TABLE IF NOT EXISTS annual_pdf_log' "$MAIN"
+          grep -Fq 'String annualPdfSummaryV3459' "$MAIN"
+          grep -Fq 'PDF importati' "$MAIN"
+          if grep -nE '^\\n($|[}])' "$MAIN"; then
+            echo "ERRORE: trovato token letterale \\n nel sorgente Java"
+            exit 1
+          fi
+          grep -Fq 'addHistoricalPerformanceSummaryV3459' "$MAIN"
+          grep -Fq 'viewYear!=dataYear()&&addHistoricalPerformanceSummaryV3459(viewYear)' "$MAIN"
+          if grep -Fq 'addHistoricalPerformanceSummaryV3459(broker)' "$MAIN"; then
+            echo "ERRORE: Performance storico usa broker al posto di viewYear"
+            exit 1
+          fi
+          grep -Fq 'SELECT 1 FROM annual_pdf_log WHERE doc_hash=? LIMIT 1' "$MAIN"
+          grep -Fq 'annualPdfSummaryV3459(historyYear)' "$MAIN"
+          grep -Fq 'PDF importati' "$MAIN"
+          grep -Fq 'improveHomeHistoryReadabilityV3460' "$MAIN"
+          grep -Fq 'formatHomeHistoryLinesV3460' "$MAIN"
+          grep -Fq 'fixBottomNavLabelsV3460' "$MAIN"
+          grep -Fq 'setAutoSizeTextTypeUniformWithConfiguration' "$MAIN"
+          grep -Fq 't.setText("Movimenti")' "$MAIN"
+          grep -Fq 'Lordo  ' "$MAIN"
+          grep -Fq 'Perdita / minus  -' "$MAIN"
+          grep -Fq 'Recupero fiscale  +' "$MAIN"
+          grep -Fq 'Risultato complessivo  ' "$MAIN"
+          grep -Fq 'Storico annuale aggregato: il dettaglio mensile non è disponibile' "$MAIN"
+          grep -Fq 'DEV 3.4.62' "$MAIN"
+          if grep -Fq 'DEV 3.4.59' "$MAIN"; then
+            echo "ERROR: stale DEV 3.4.59 visible label remains" >&2
+            exit 1
+          fi
+          if grep -Fq 'DEV 3.4.60' "$MAIN"; then
+            echo "ERROR: stale DEV 3.4.60 visible label remains" >&2
+            exit 1
+          fi
+
+          grep -Fq 'decorateHistoricalPerformanceYearV3462' "$MAIN"
+          grep -Fq 'CREATE TABLE IF NOT EXISTS annual_history_state' "$MAIN"
+          grep -Fq 'closeHistoricalAggregateYearV3462' "$MAIN"
+          grep -Fq 'applyHistoricalUiSafetyV3462' "$MAIN"
+          grep -Fq 'Anno "+year+" CHIUSO' "$MAIN"
+          grep -Fq 'Storico annuale aggregato: dettaglio mensile non disponibile.' "$MAIN"
+          grep -Fq '"Portafogli"' "$MAIN"
+          grep -Fq '"Movimenti"' "$MAIN"
+          if grep -Fq '"Portafogl"' "$MAIN"; then
+            echo "ERROR: truncated Portafogl source label remains" >&2
+            exit 1
+          fi
+          if grep -Fq '"Movimen"' "$MAIN"; then
+            echo "ERROR: truncated Movimen source label remains" >&2
+            exit 1
+          fi
+          if grep -Fq 'DEV 3.4.61' "$MAIN"; then
+            echo "ERROR: stale DEV 3.4.61 visible label remains" >&2
+            exit 1
+          fi
+
+          python3 - <<'PY62CHECK'
+          from pathlib import Path
+
+          s=Path("android-project-v3460/app/src/main/java/it/portafoglio2026/v3/MainActivity.java").read_text(encoding="utf-8")
+
+          def matching(t,o):
+              d=0;i=o;ins=inc=lin=blk=False;esc=False
+              while i<len(t):
+                  c=t[i];n=t[i+1] if i+1<len(t) else ''
+                  if lin:
+                      if c=='\n':lin=False
+                      i+=1;continue
+                  if blk:
+                      if c=='*' and n=='/':blk=False;i+=2;continue
+                      i+=1;continue
+                  if ins:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='"':ins=False
+                      i+=1;continue
+                  if inc:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":inc=False
+                      i+=1;continue
+                  if c=='/' and n=='/':lin=True;i+=2;continue
+                  if c=='/' and n=='*':blk=True;i+=2;continue
+                  if c=='"':ins=True;i+=1;continue
+                  if c=="'":inc=True;i+=1;continue
+                  if c=='{':d+=1
+                  elif c=='}':
+                      d-=1
+                      if d==0:return i
+                  i+=1
+              raise RuntimeError("unbalanced")
+
+          sig="boolean addHistoricalPerformanceSummaryV3459(int year)"
+          p=s.find(sig); assert p>=0
+          o=s.find("{",p); c=matching(s,o)
+          body=s[p:c+1]
+          assert "LinearLayout hero=card()" not in body, "duplicate historical hero card remains"
+          assert "decorateHistoricalPerformanceYearV3462(year,headline);" in body
+
+          close_sig="void closeHistoricalAggregateYearV3462(final int year)"
+          p=s.find(close_sig); assert p>=0
+          o=s.find("{",p); c=matching(s,o)
+          close_body=s[p:c+1]
+          assert "annual_history_state" in close_body
+          assert "UPDATE annual_history" not in close_body
+          assert 'insertWithOnConflict' in close_body
+
+          assert 'if(year<=0||year==dataYear())return;' in s
+          assert 'setVisibility(android.view.View.GONE)' in s
+          print("V3.4.62 historical close / performance / nav regression OK")
+          PY62CHECK
+
+
+          python3 - <<'PY60CHECK'
+          from pathlib import Path
+
+          s=Path("android-project-v3460/app/src/main/java/it/portafoglio2026/v3/MainActivity.java").read_text(encoding="utf-8")
+
+          def matching(t,o):
+              d=0;i=o;ins=inc=lin=blk=False;esc=False
+              while i<len(t):
+                  c=t[i];n=t[i+1] if i+1<len(t) else ''
+                  if lin:
+                      if c=='\n':lin=False
+                      i+=1;continue
+                  if blk:
+                      if c=='*' and n=='/':blk=False;i+=2;continue
+                      i+=1;continue
+                  if ins:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='"':ins=False
+                      i+=1;continue
+                  if inc:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":inc=False
+                      i+=1;continue
+                  if c=='/' and n=='/':lin=True;i+=2;continue
+                  if c=='/' and n=='*':blk=True;i+=2;continue
+                  if c=='"':ins=True;i+=1;continue
+                  if c=="'":inc=True;i+=1;continue
+                  if c=='{':d+=1
+                  elif c=='}':
+                      d-=1
+                      if d==0:return i
+                  i+=1
+              raise RuntimeError("unbalanced")
+
+          sig="String annualPdfSummaryV3459(int year)"
+          p=s.find(sig); assert p>=0, sig
+          o=s.find("{",p); c=matching(s,o)
+          body=s[p:c+1]
+          assert r'\\n' not in body, "literal \\\\n remains in "+sig
+          assert r'\n' in body, "real Java newline escape missing in "+sig
+
+          hist="boolean addHistoricalPerformanceSummaryV3459(int year)"
+          hp=s.find(hist); assert hp>=0, hist
+          ho=s.find("{",hp); hc=matching(s,ho)
+          hbody=s[hp:hc+1]
+          assert r'\\n' not in hbody, "literal \\\\n remains in historical Performance"
+
+          assert "improveHomeHistoryReadabilityV3460();" in s
+          assert "fixBottomNavLabelsV3460();" in s
+          assert "Storico annuale aggregato: il dettaglio mensile non è disponibile" in s
+          print("V3.4.61 UI formatting regression OK")
+          PY60CHECK
+
+
+          python3 - <<'PY'
+          # Regression of the two 2025 Directa examples used to design the parser.
+          import re
+          def n(x): return float(x.replace('.', '').replace(',', '.'))
+          patr = "TOTALE LIQUIDITA': 275,05\nTOTALE TITOLI EURO _____________________\n96.457,39"
+          liq = re.search(r"TOTALE\s+LIQUIDITA['’]?\s*:?\s*([0-9\.]+,[0-9]{2})", patr, re.I|re.S).group(1)
+          sec = re.search(r"TOTALE\s+TITOLI\s+EURO[\s_]*([0-9\.]+,[0-9]{2})", patr, re.I|re.S).group(1)
+          assert round(n(liq)+n(sec),2)==96732.44
+          costs = "Totale costi dei servizi prestati dalla Sim Perc. 3,36 % 2.441,19\nGiacenza media 72.542,75"
+          total = re.search(r"Totale\s+costi\s+dei\s+servizi\s+prestati\s+dalla\s+Sim.*?Perc\.?\s*[0-9\.]+,[0-9]{2}\s*%\s*([0-9\.]+,[0-9]{2})", costs, re.I|re.S).group(1)
+          avg = re.search(r"Giacenza\s+media\s+([0-9\.]+,[0-9]{2})", costs, re.I|re.S).group(1)
+          assert n(total)==2441.19 and n(avg)==72542.75
+          print('2025 PDF parser regression OK')
+          PY
+
+      - name: Build signed V3.4.62 DEV APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.62 DEV APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.62 DEV signed APK verified"
+
+      - name: Upload signed V3.4.62 DEV APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3462-DEV-HISTORICAL-CLOSE-PERFORMANCE-NAV-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
