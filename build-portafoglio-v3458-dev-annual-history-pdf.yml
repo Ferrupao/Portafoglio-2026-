@@ -1,0 +1,484 @@
+name: Build Portafoglio 2026 V3.4.58 DEV Annual History PDF
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3458-dev-annual-history-pdf.yml"
+      - ".github/workflows/build-portafoglio-v3456-full-bold-readability.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Extract V3.4.44 source
+        run: |
+          rm -rf android-project-v3458
+          mkdir android-project-v3458
+          unzip -q "portafoglio-v3444-dev.zip" -d android-project-v3458
+
+      - name: Reuse proven V3.4.56 patch
+        run: |
+          python3 - <<'PY56'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/build-portafoglio-v3456-full-bold-readability.yml').read_text(encoding='utf-8')
+          start_marker = "          cat > /tmp/make_v3456.py <<'PY'\n"
+          end_marker = "\n          PY\n          python3 /tmp/make_v3456.py"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          script = textwrap.dedent(workflow[start:end])
+          script = script.replace('android-project-v3456', 'android-project-v3458')
+          Path('/tmp/make_v3456_for_v3458.py').write_text(script, encoding='utf-8')
+          print('Extracted proven V3.4.56 patch script for V3.4.58 base')
+          PY56
+          python3 /tmp/make_v3456_for_v3458.py
+
+      - name: Patch V3.4.58 annual history PDF updater
+        shell: bash
+        run: |
+          cat > /tmp/make_v3458.py <<'PY58'
+          from pathlib import Path
+          import re
+
+          root = Path('android-project-v3458')
+          main_path = root / 'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path = root / 'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path = root / 'app/build.gradle'
+
+          main = main_path.read_text(encoding='utf-8')
+          db = db_path.read_text(encoding='utf-8')
+          gradle = gradle_path.read_text(encoding='utf-8')
+
+          assert 'applicationId "it.portafoglio2026.v32"' in gradle
+          assert 'versionCode 98' in gradle
+          assert 'versionName "3.4.56-dev-full-bold-readability"' in gradle
+          assert 'DEV 3.4.56' in main
+          assert 'DB_VERSION = 17' in db
+          assert 'void showHistory()' in main
+          assert 'history_year_filter' in main
+
+          gradle = gradle.replace('versionCode 98', 'versionCode 100', 1)
+          gradle = gradle.replace(
+              'versionName "3.4.56-dev-full-bold-readability"',
+              'versionName "3.4.58-dev-annual-history-pdf"',
+              1
+          )
+
+          dep = "implementation 'com.tom-roush:pdfbox-android:2.0.27.0'"
+          if dep not in gradle:
+              m = re.search(r'dependencies\s*\{', gradle)
+              if not m:
+                  raise RuntimeError('dependencies block not found')
+              gradle = gradle[:m.end()] + '\n    ' + dep + gradle[m.end():]
+
+          main = main.replace('DEV 3.4.56', 'DEV 3.4.58')
+
+          def matching_brace(text, open_pos):
+              depth=0;i=open_pos;in_str=in_char=in_line=in_block=False;esc=False
+              while i<len(text):
+                  c=text[i];n=text[i+1] if i+1<len(text) else ''
+                  if in_line:
+                      if c=='\n':in_line=False
+                      i+=1;continue
+                  if in_block:
+                      if c=='*' and n=='/':in_block=False;i+=2;continue
+                      i+=1;continue
+                  if in_str:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='"':in_str=False
+                      i+=1;continue
+                  if in_char:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":in_char=False
+                      i+=1;continue
+                  if c=='/' and n=='/':in_line=True;i+=2;continue
+                  if c=='/' and n=='*':in_block=True;i+=2;continue
+                  if c=='"':in_str=True;i+=1;continue
+                  if c=="'":in_char=True;i+=1;continue
+                  if c=='{':depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          # Add the yearly PDF action to the Storico year selector card.
+          hs = main.index('void showHistory()')
+          ho = main.index('{', hs)
+          hc = matching_brace(main, ho)
+          history = main[hs:hc+1]
+          marker = 'content.addView(filter);'
+          if marker not in history:
+              raise RuntimeError('Storico filter marker not found')
+          button_code = r'''
+                  ensureAnnualPdfTableV3458();
+                  android.widget.Button annualPdfBtn=new android.widget.Button(this);
+                  annualPdfBtn.setText("Aggiorna anno da PDF");
+                  annualPdfBtn.setAllCaps(false);
+                  annualPdfBtn.setOnClickListener(v->pickAnnualHistoryPdfV3458(historyYear));
+                  filter.addView(annualPdfBtn);
+                  String annualPdfSummary=annualPdfSummaryV3458(historyYear);
+                  if(annualPdfSummary!=null&&!annualPdfSummary.isEmpty())filter.addView(muted(annualPdfSummary,12));
+          '''
+          history = history.replace(marker, button_code + '\n                  ' + marker, 1)
+
+          breakdown = 'double[] parts=db.yearEndBreakdownActive(yr);Double invested=parts[3]>0?parts[0]:null,cash=parts[3]>0?parts[1]:null;if(finalCap==null&&parts[3]>0)finalCap=parts[2];double partTotal=parts[3]>0?parts[2]:(finalCap==null?0:finalCap);'
+          replacement = '''double[] parts=db.yearEndBreakdownActive(yr);Double invested=parts[3]>0?parts[0]:null,cash=parts[3]>0?parts[1]:null;if(finalCap==null&&parts[3]>0)finalCap=parts[2];
+                      double[] pdfParts=annualPdfPortfolioValuesV3458(yr);
+                      if(pdfParts[0]>=0)invested=Double.valueOf(pdfParts[0]);
+                      if(pdfParts[1]>=0)cash=Double.valueOf(pdfParts[1]);
+                      if(pdfParts[2]>=0)finalCap=Double.valueOf(pdfParts[2]);
+                      double partTotal=(invested!=null||cash!=null)?((invested==null?0:invested)+(cash==null?0:cash)):(finalCap==null?0:finalCap);
+                      if(finalCap==null&&partTotal>0)finalCap=Double.valueOf(partTotal);'''
+          if breakdown not in history:
+              raise RuntimeError('Storico year-end breakdown marker not found')
+          history = history.replace(breakdown, replacement, 1)
+          main = main[:hs] + history + main[hc+1:]
+
+          # We expect no legacy onActivityResult in this compact activity.
+          # Failing loudly is safer than silently overriding another import flow.
+          if 'onActivityResult(' in main:
+              raise RuntimeError('Existing onActivityResult detected; merge required')
+
+          helpers = r'''
+              static final int REQ_ANNUAL_HISTORY_PDF_V3458=3458;
+
+              static class AnnualPdfParsedV3458{
+                  int year=-1;String docType="";String hash="";String name="";
+                  Double securitiesValue=null,liquidity=null,finalCapital=null,totalCosts=null,averageBalance=null;
+                  Double stampDuty=null,brokerageCommissions=null,capGainTax=null,dividendTax=null,tobinTax=null,realtimeQuotes=null;
+                  Double interestLong=null,securitiesLendingInterest=null,issuerRetrocessions=null,freeCommissionsPaid=null;
+              }
+
+              void ensureAnnualPdfTableV3458(){
+                  db.getWritableDatabase().execSQL(
+                      "CREATE TABLE IF NOT EXISTS annual_pdf_data("+
+                      "year INTEGER NOT NULL,"+
+                      "doc_type TEXT NOT NULL,"+
+                      "doc_hash TEXT,"+
+                      "doc_name TEXT,"+
+                      "imported_at TEXT,"+
+                      "securities_value REAL,"+
+                      "liquidity REAL,"+
+                      "final_capital REAL,"+
+                      "total_costs REAL,"+
+                      "average_balance REAL,"+
+                      "stamp_duty REAL,"+
+                      "brokerage_commissions REAL,"+
+                      "cap_gain_tax REAL,"+
+                      "dividend_tax REAL,"+
+                      "tobin_tax REAL,"+
+                      "realtime_quotes REAL,"+
+                      "interest_long REAL,"+
+                      "securities_lending_interest REAL,"+
+                      "issuer_retrocessions REAL,"+
+                      "free_commissions_paid REAL,"+
+                      "PRIMARY KEY(year,doc_type))"
+                  );
+              }
+
+              void pickAnnualHistoryPdfV3458(int year){
+                  db.setSetting("annual_pdf_import_year",String.valueOf(year));
+                  android.content.Intent i=new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);
+                  i.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+                  i.setType("application/pdf");
+                  startActivityForResult(i,REQ_ANNUAL_HISTORY_PDF_V3458);
+              }
+
+              @Override protected void onActivityResult(int requestCode,int resultCode,android.content.Intent data){
+                  super.onActivityResult(requestCode,resultCode,data);
+                  if(requestCode!=REQ_ANNUAL_HISTORY_PDF_V3458)return;
+                  if(resultCode!=android.app.Activity.RESULT_OK||data==null||data.getData()==null)return;
+                  android.net.Uri uri=data.getData();
+                  try{getContentResolver().takePersistableUriPermission(uri,data.getFlags()&android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);}catch(Exception ignored){}
+                  int year=dataYear();
+                  try{year=Integer.parseInt(db.getSetting("annual_pdf_import_year",String.valueOf(dataYear())));}catch(Exception ignored){}
+                  final int selectedYear=year;
+                  new Thread(()->{
+                      try{
+                          final AnnualPdfParsedV3458 parsed=parseAnnualPdfV3458(selectedYear,uri);
+                          runOnUiThread(()->previewAnnualPdfV3458(parsed));
+                      }catch(Exception e){
+                          runOnUiThread(()->new android.app.AlertDialog.Builder(this)
+                              .setTitle("PDF non importato")
+                              .setMessage(e.getMessage()==null?"Documento non riconosciuto.":e.getMessage())
+                              .setPositiveButton("OK",null).show());
+                      }
+                  }).start();
+              }
+
+              AnnualPdfParsedV3458 parseAnnualPdfV3458(int selectedYear,android.net.Uri uri)throws Exception{
+                  java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream();
+                  try(java.io.InputStream in=getContentResolver().openInputStream(uri)){
+                      if(in==null)throw new Exception("Impossibile aprire il PDF.");
+                      byte[] buf=new byte[8192];int n,total=0;
+                      while((n=in.read(buf))>0){
+                          total+=n;if(total>25*1024*1024)throw new Exception("PDF troppo grande: limite 25 MB.");
+                          out.write(buf,0,n);
+                      }
+                  }
+                  byte[] bytes=out.toByteArray();
+                  java.security.MessageDigest md=java.security.MessageDigest.getInstance("SHA-256");
+                  byte[] dig=md.digest(bytes);StringBuilder hx=new StringBuilder();for(byte b:dig)hx.append(String.format(java.util.Locale.US,"%02x",b&255));
+
+                  com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(getApplicationContext());
+                  String text;
+                  try(com.tom_roush.pdfbox.pdmodel.PDDocument doc=com.tom_roush.pdfbox.pdmodel.PDDocument.load(bytes)){
+                      text=new com.tom_roush.pdfbox.text.PDFTextStripper().getText(doc);
+                  }
+                  if(text==null||text.trim().isEmpty())throw new Exception("Il PDF non contiene testo leggibile. Per ora sono supportati PDF testuali, non scansioni fotografiche.");
+
+                  AnnualPdfParsedV3458 p=new AnnualPdfParsedV3458();p.hash=hx.toString();p.name=pdfDisplayNameV3458(uri);
+                  java.util.regex.Matcher ym=java.util.regex.Pattern.compile("31\\s*/\\s*12\\s*/\\s*(20\\d{2})",java.util.regex.Pattern.CASE_INSENSITIVE).matcher(text);
+                  if(ym.find())p.year=Integer.parseInt(ym.group(1));
+                  if(p.year<0)throw new Exception("Anno del documento non riconosciuto.");
+                  if(p.year!=selectedYear)throw new Exception("Il PDF è riferito al "+p.year+", ma nello Storico è selezionato il "+selectedYear+". Nessun dato è stato modificato.");
+
+                  String low=text.toLowerCase(java.util.Locale.ITALIAN);
+                  if(low.contains("situazione patrimoniale")&&low.contains("totale titoli")){
+                      p.docType="PATRIMONIO";
+                      p.liquidity=findItalianAmountV3458(text,"TOTALE\\s+LIQUIDITA['’]?\\s*:?\\s*([0-9\\.]+,[0-9]{2})");
+                      p.securitiesValue=findItalianAmountV3458(text,"TOTALE\\s+TITOLI\\s+EURO[\\s_]*([0-9\\.]+,[0-9]{2})");
+                      if(p.liquidity==null||p.securitiesValue==null)throw new Exception("Situazione patrimoniale riconosciuta, ma totale titoli o liquidità non leggibili.");
+                      p.finalCapital=Double.valueOf(p.liquidity.doubleValue()+p.securitiesValue.doubleValue());
+                  }else if(low.contains("rendicontazione costi e oneri")||low.contains("totale costi dei servizi prestati")){
+                      p.docType="COSTI";
+                      p.stampDuty=findItalianAmountV3458(text,"Tasse\\s*-\\s*Bolli\\s+periodici\\s+([0-9\\.]+,[0-9]{2})");
+                      p.brokerageCommissions=findItalianAmountV3458(text,"Commissioni\\s+intermediazione\\s+([0-9\\.]+,[0-9]{2})");
+                      p.interestLong=findItalianAmountV3458(text,"Interessi\\s+Long\\s+([0-9\\.]+,[0-9]{2})");
+                      p.securitiesLendingInterest=findItalianAmountV3458(text,"Interessi\\s+prestito\\s+titoli\\s+([0-9\\.]+,[0-9]{2})");
+                      p.capGainTax=findItalianAmountV3458(text,"Tasse\\s*-\\s*Ritenute\\s+su\\s+cap\\.?gain\\s+([0-9\\.]+,[0-9]{2})");
+                      p.dividendTax=findItalianAmountV3458(text,"Tasse\\s*-\\s*Ritenute\\s+su\\s+dividendi\\s+([0-9\\.]+,[0-9]{2})");
+                      p.tobinTax=findItalianAmountV3458(text,"Tasse\\s*-\\s*Tobin\\s+Tax\\s+([0-9\\.]+,[0-9]{2})");
+                      p.realtimeQuotes=findItalianAmountV3458(text,"Quotazioni\\s+in\\s+tempo\\s+reale\\s+([0-9\\.]+,[0-9]{2})");
+                      p.issuerRetrocessions=findItalianAmountV3458(text,"Retrocessioni\\s+Emittenti\\s+Cw\\s+zero\\s+([0-9\\.]+,[0-9]{2})");
+                      p.freeCommissionsPaid=findItalianAmountV3458(text,"Commissioni\\s+Gratuite\\s+Pagate\\s+([0-9\\.]+,[0-9]{2})");
+                      p.totalCosts=findItalianAmountV3458(text,"Totale\\s+costi\\s+dei\\s+servizi\\s+prestati\\s+dalla\\s+Sim.*?Perc\\.?\\s*[0-9\\.]+,[0-9]{2}\\s*%\\s*([0-9\\.]+,[0-9]{2})");
+                      if(p.totalCosts==null)p.totalCosts=findItalianAmountV3458(text,"Totale\\s+costi\\s+dei\\s+servizi\\s+prestati\\s+dalla\\s+Sim.*?([0-9\\.]+,[0-9]{2})\\s*$");
+                      p.averageBalance=findItalianAmountV3458(text,"Giacenza\\s+media\\s+([0-9\\.]+,[0-9]{2})");
+                      if(p.totalCosts==null)throw new Exception("Rendicontazione costi riconosciuta, ma totale costi non leggibile.");
+                  }else throw new Exception("Tipo di PDF non riconosciuto. Sono supportati Situazione Patrimoniale e Rendicontazione Costi/Oneri Directa.");
+                  return p;
+              }
+
+              Double findItalianAmountV3458(String text,String pattern){
+                  java.util.regex.Matcher m=java.util.regex.Pattern.compile(pattern,java.util.regex.Pattern.CASE_INSENSITIVE|java.util.regex.Pattern.DOTALL|java.util.regex.Pattern.MULTILINE).matcher(text);
+                  if(!m.find())return null;
+                  try{return Double.valueOf(m.group(1).replace(" ","").replace(".","").replace(',','.'));}catch(Exception e){return null;}
+              }
+
+              String pdfDisplayNameV3458(android.net.Uri uri){
+                  String name="Documento PDF";android.database.Cursor c=null;
+                  try{c=getContentResolver().query(uri,new String[]{android.provider.OpenableColumns.DISPLAY_NAME},null,null,null);if(c!=null&&c.moveToFirst())name=c.getString(0);}catch(Exception ignored){}finally{if(c!=null)c.close();}
+                  return name==null?"Documento PDF":name;
+              }
+
+              boolean annualPdfSameHashV3458(AnnualPdfParsedV3458 p){
+                  ensureAnnualPdfTableV3458();android.database.Cursor c=db.getReadableDatabase().rawQuery("SELECT doc_hash FROM annual_pdf_data WHERE year=? AND doc_type=?",new String[]{String.valueOf(p.year),p.docType});
+                  try{return c.moveToFirst()&&!c.isNull(0)&&p.hash.equals(c.getString(0));}finally{c.close();}
+              }
+
+              void previewAnnualPdfV3458(AnnualPdfParsedV3458 p){
+                  if(annualPdfSameHashV3458(p)){
+                      new android.app.AlertDialog.Builder(this).setTitle("PDF già importato").setMessage("Questo documento è già stato usato per aggiornare lo storico "+p.year+". Nessun dato verrà duplicato.").setPositiveButton("OK",null).show();return;
+                  }
+                  String msg=annualPdfPreviewTextV3458(p);
+                  new android.app.AlertDialog.Builder(this)
+                      .setTitle("Aggiorna storico "+p.year)
+                      .setMessage(msg)
+                      .setNegativeButton("Annulla",null)
+                      .setPositiveButton("Conferma aggiornamento",(d,w)->saveAnnualPdfV3458(p))
+                      .show();
+              }
+
+              String annualPdfPreviewTextV3458(AnnualPdfParsedV3458 p){
+                  java.text.NumberFormat nf=java.text.NumberFormat.getNumberInstance(java.util.Locale.ITALY);nf.setMinimumFractionDigits(2);nf.setMaximumFractionDigits(2);
+                  StringBuilder s=new StringBuilder();s.append("Documento: ").append(p.name).append("\n\n");
+                  if("PATRIMONIO".equals(p.docType)){
+                      Double oldFinal=annualHistoryFieldV3458(p.year,"final_capital");double[] oldPdf=annualPdfPortfolioValuesV3458(p.year);double[] parts=db.yearEndBreakdownActive(p.year);
+                      Double oldSec=oldPdf[0]>=0?Double.valueOf(oldPdf[0]):(parts[3]>0?Double.valueOf(parts[0]):null);
+                      Double oldLiq=oldPdf[1]>=0?Double.valueOf(oldPdf[1]):(parts[3]>0?Double.valueOf(parts[1]):null);
+                      s.append("Titoli: ").append(oldSec==null?"—":nf.format(oldSec)+" €").append("  →  ").append(nf.format(p.securitiesValue)).append(" €\n");
+                      s.append("Liquidità: ").append(oldLiq==null?"—":nf.format(oldLiq)+" €").append("  →  ").append(nf.format(p.liquidity)).append(" €\n");
+                      s.append("Patrimonio finale: ").append(oldFinal==null?"—":nf.format(oldFinal)+" €").append("  →  ").append(nf.format(p.finalCapital)).append(" €\n\n");
+                      s.append("Il record annuale esistente verrà aggiornato, non duplicato.");
+                  }else{
+                      Double old=annualPdfCostValueV3458(p.year,"total_costs");
+                      s.append("Totale costi documentati: ").append(old==null?"—":nf.format(old)+" €").append("  →  ").append(nf.format(p.totalCosts)).append(" €");
+                      if(p.averageBalance!=null)s.append("\nGiacenza media: ").append(nf.format(p.averageBalance)).append(" €");
+                      s.append("\n\nI costi vengono registrati nello storico come dati documentali. Non vengono sottratti automaticamente dal risultato annuale, evitando doppi conteggi fiscali.");
+                  }
+                  return s.toString();
+              }
+
+              Double annualHistoryFieldV3458(int year,String field){
+                  android.database.Cursor c=db.annualHistory();try{while(c.moveToNext())if(c.getInt(c.getColumnIndexOrThrow("year"))==year)return getNullable(c,field);}finally{c.close();}return null;
+              }
+
+              void saveAnnualPdfV3458(AnnualPdfParsedV3458 p){
+                  ensureAnnualPdfTableV3458();android.database.sqlite.SQLiteDatabase w=db.getWritableDatabase();w.beginTransaction();
+                  try{
+                      android.content.ContentValues cv=new android.content.ContentValues();
+                      cv.put("year",p.year);cv.put("doc_type",p.docType);cv.put("doc_hash",p.hash);cv.put("doc_name",p.name);cv.put("imported_at",new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm",java.util.Locale.ITALY).format(new java.util.Date()));
+                      putNullableV3458(cv,"securities_value",p.securitiesValue);putNullableV3458(cv,"liquidity",p.liquidity);putNullableV3458(cv,"final_capital",p.finalCapital);putNullableV3458(cv,"total_costs",p.totalCosts);putNullableV3458(cv,"average_balance",p.averageBalance);
+                      putNullableV3458(cv,"stamp_duty",p.stampDuty);putNullableV3458(cv,"brokerage_commissions",p.brokerageCommissions);putNullableV3458(cv,"cap_gain_tax",p.capGainTax);putNullableV3458(cv,"dividend_tax",p.dividendTax);putNullableV3458(cv,"tobin_tax",p.tobinTax);putNullableV3458(cv,"realtime_quotes",p.realtimeQuotes);putNullableV3458(cv,"interest_long",p.interestLong);putNullableV3458(cv,"securities_lending_interest",p.securitiesLendingInterest);putNullableV3458(cv,"issuer_retrocessions",p.issuerRetrocessions);putNullableV3458(cv,"free_commissions_paid",p.freeCommissionsPaid);
+                      w.insertWithOnConflict("annual_pdf_data",null,cv,android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE);
+                      if("PATRIMONIO".equals(p.docType)&&p.finalCapital!=null){android.content.ContentValues ah=new android.content.ContentValues();ah.put("final_capital",p.finalCapital);w.update("annual_history",ah,"year=?",new String[]{String.valueOf(p.year)});}
+                      w.setTransactionSuccessful();
+                  }finally{w.endTransaction();}
+                  db.setSetting("history_year_filter",String.valueOf(p.year));
+                  new android.app.AlertDialog.Builder(this).setTitle("Storico aggiornato").setMessage("PDF acquisito per il "+p.year+". Nessun nuovo record annuale è stato creato e i risultati economici non sono stati ricalcolati automaticamente.").setPositiveButton("OK",(d,w2)->showHistory()).show();
+              }
+
+              void putNullableV3458(android.content.ContentValues cv,String key,Double v){if(v==null)cv.putNull(key);else cv.put(key,v);}
+
+              double[] annualPdfPortfolioValuesV3458(int year){
+                  ensureAnnualPdfTableV3458();double[] r=new double[]{-1,-1,-1};android.database.Cursor c=db.getReadableDatabase().rawQuery("SELECT securities_value,liquidity,final_capital FROM annual_pdf_data WHERE year=? AND doc_type='PATRIMONIO'",new String[]{String.valueOf(year)});
+                  try{if(c.moveToFirst()){if(!c.isNull(0))r[0]=c.getDouble(0);if(!c.isNull(1))r[1]=c.getDouble(1);if(!c.isNull(2))r[2]=c.getDouble(2);}}finally{c.close();}return r;
+              }
+
+              Double annualPdfCostValueV3458(int year,String field){
+                  ensureAnnualPdfTableV3458();String[] allowed=new String[]{"total_costs","average_balance","stamp_duty","brokerage_commissions","cap_gain_tax","dividend_tax","tobin_tax","realtime_quotes","interest_long","securities_lending_interest","issuer_retrocessions","free_commissions_paid"};boolean ok=false;for(String a:allowed)if(a.equals(field)){ok=true;break;}if(!ok)return null;
+                  android.database.Cursor c=db.getReadableDatabase().rawQuery("SELECT "+field+" FROM annual_pdf_data WHERE year=? AND doc_type='COSTI'",new String[]{String.valueOf(year)});try{return c.moveToFirst()&&!c.isNull(0)?Double.valueOf(c.getDouble(0)):null;}finally{c.close();}
+              }
+
+              String annualPdfSummaryV3458(int year){
+                  ensureAnnualPdfTableV3458();java.text.NumberFormat nf=java.text.NumberFormat.getNumberInstance(java.util.Locale.ITALY);nf.setMinimumFractionDigits(2);nf.setMaximumFractionDigits(2);StringBuilder s=new StringBuilder();
+                  double[] p=annualPdfPortfolioValuesV3458(year);if(p[0]>=0||p[1]>=0||p[2]>=0){s.append("PDF patrimonio");if(p[0]>=0)s.append(" • titoli ").append(nf.format(p[0])).append(" €");if(p[1]>=0)s.append(" • liquidità ").append(nf.format(p[1])).append(" €");if(p[2]>=0)s.append(" • totale ").append(nf.format(p[2])).append(" €");}
+                  Double costs=annualPdfCostValueV3458(year,"total_costs"),avg=annualPdfCostValueV3458(year,"average_balance");if(costs!=null){
+                      if(s.length()>0)s.append("\n");s.append("PDF costi/oneri • totale ").append(nf.format(costs)).append(" €");if(avg!=null)s.append(" • giacenza media ").append(nf.format(avg)).append(" €");
+                      Double comm=annualPdfCostValueV3458(year,"brokerage_commissions"),bolli=annualPdfCostValueV3458(year,"stamp_duty"),cg=annualPdfCostValueV3458(year,"cap_gain_tax"),div=annualPdfCostValueV3458(year,"dividend_tax"),tobin=annualPdfCostValueV3458(year,"tobin_tax"),quotes=annualPdfCostValueV3458(year,"realtime_quotes");
+                      if(comm!=null)s.append("\nCommissioni: ").append(nf.format(comm)).append(" €");if(bolli!=null)s.append(" • Bolli: ").append(nf.format(bolli)).append(" €");
+                      if(cg!=null)s.append("\nRitenute capital gain: ").append(nf.format(cg)).append(" €");if(div!=null)s.append(" • Ritenute dividendi: ").append(nf.format(div)).append(" €");
+                      if(tobin!=null)s.append("\nTobin Tax: ").append(nf.format(tobin)).append(" €");if(quotes!=null)s.append(" • Quotazioni real time: ").append(nf.format(quotes)).append(" €");
+                  }
+                  if(s.length()>0)s.append("\nDati documentali: nessun doppio conteggio nel P/L annuale.");return s.toString();
+              }
+          '''
+
+          # Append helpers before the activity class closing brace.
+          last = main.rfind('}')
+          if last<0:raise RuntimeError('MainActivity closing brace not found')
+          main = main[:last] + '\n' + helpers + '\n' + main[last:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+          print('V3.4.58 annual history PDF updater applied')
+          PY58
+          python3 /tmp/make_v3458.py
+
+      - name: Verify V3.4.58 source
+        run: |
+          set -e
+          MAIN="android-project-v3458/app/src/main/java/it/portafoglio2026/v3/MainActivity.java"
+          DB="android-project-v3458/app/src/main/java/it/portafoglio2026/v3/DbHelper.java"
+          GRADLE="android-project-v3458/app/build.gradle"
+
+          grep -Fq 'applicationId "it.portafoglio2026.v32"' "$GRADLE"
+          grep -Fq 'versionCode 100' "$GRADLE"
+          grep -Fq 'versionName "3.4.58-dev-annual-history-pdf"' "$GRADLE"
+          grep -Fq "com.tom-roush:pdfbox-android:2.0.27.0" "$GRADLE"
+          grep -Fq 'DB_VERSION = 17' "$DB"
+          grep -Fq 'DEV 3.4.58' "$MAIN"
+          grep -Fq 'Aggiorna anno da PDF' "$MAIN"
+          grep -Fq 'CREATE TABLE IF NOT EXISTS annual_pdf_data' "$MAIN"
+          grep -Fq 'PRIMARY KEY(year,doc_type)' "$MAIN"
+          grep -Fq 'PDF già importato' "$MAIN"
+          grep -Fq 'Nessun nuovo record annuale è stato creato' "$MAIN"
+          grep -Fq 'if(overall!=null)cv.put("portfolio_profit",overall);' "$MAIN"
+          grep -Fq 'Double.valueOf(autoGross)' "$MAIN"
+          grep -Fq 'history_year_filter' "$MAIN"
+          grep -Fq 'setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD)' "$MAIN"
+
+          python3 - <<'PY'
+          # Regression of the two 2025 Directa examples used to design the parser.
+          import re
+          def n(x): return float(x.replace('.', '').replace(',', '.'))
+          patr = "TOTALE LIQUIDITA': 275,05\nTOTALE TITOLI EURO _____________________\n96.457,39"
+          liq = re.search(r"TOTALE\s+LIQUIDITA['’]?\s*:?\s*([0-9\.]+,[0-9]{2})", patr, re.I|re.S).group(1)
+          sec = re.search(r"TOTALE\s+TITOLI\s+EURO[\s_]*([0-9\.]+,[0-9]{2})", patr, re.I|re.S).group(1)
+          assert round(n(liq)+n(sec),2)==96732.44
+          costs = "Totale costi dei servizi prestati dalla Sim Perc. 3,36 % 2.441,19\nGiacenza media 72.542,75"
+          total = re.search(r"Totale\s+costi\s+dei\s+servizi\s+prestati\s+dalla\s+Sim.*?Perc\.?\s*[0-9\.]+,[0-9]{2}\s*%\s*([0-9\.]+,[0-9]{2})", costs, re.I|re.S).group(1)
+          avg = re.search(r"Giacenza\s+media\s+([0-9\.]+,[0-9]{2})", costs, re.I|re.S).group(1)
+          assert n(total)==2441.19 and n(avg)==72542.75
+          print('2025 PDF parser regression OK')
+          PY
+
+      - name: Build signed V3.4.58 DEV APK
+        working-directory: android-project-v3458
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.58 DEV APK
+        run: |
+          APK="android-project-v3458/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.58 DEV signed APK verified"
+
+      - name: Upload signed V3.4.58 DEV APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3458-DEV-ANNUAL-HISTORY-PDF-SIGNED-APK
+          path: android-project-v3458/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
