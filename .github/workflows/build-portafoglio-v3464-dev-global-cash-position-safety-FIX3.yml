@@ -1,0 +1,210 @@
+name: Build Portafoglio 2026 V3.4.64 DEV Global Cash Position Safety FIX3
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX3.yml"
+      - ".github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3456-full-bold-readability.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Extract V3.4.44 source
+        run: |
+          rm -rf android-project-v3460
+          mkdir android-project-v3460
+          unzip -q "portafoglio-v3444-dev.zip" -d android-project-v3460
+
+      - name: Reuse proven V3.4.56 patch
+        run: |
+          python3 - <<'PY56'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/build-portafoglio-v3456-full-bold-readability.yml').read_text(encoding='utf-8')
+          start_marker = "          cat > /tmp/make_v3456.py <<'PY'\n"
+          end_marker = "\n          PY\n          python3 /tmp/make_v3456.py"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          script = textwrap.dedent(workflow[start:end])
+          script = script.replace('android-project-v3456', 'android-project-v3460')
+          Path('/tmp/make_v3456_for_v3460.py').write_text(script, encoding='utf-8')
+          print('Extracted proven V3.4.56 patch script for V3.4.64 FIX3 base')
+          PY56
+          python3 /tmp/make_v3456_for_v3460.py
+
+      - name: Reuse proven V3.4.58 through V3.4.64 patches from FIX2
+        shell: bash
+        run: |
+          python3 - <<'PYPATCHES'
+          from pathlib import Path
+          import subprocess
+          import textwrap
+
+          workflow_path = Path('.github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml')
+          workflow = workflow_path.read_text(encoding='utf-8')
+          patches = [
+              ('make_v3458.py', 'PY58'),
+              ('make_v3459.py', 'PY59'),
+              ('make_v3460.py', 'PY60'),
+              ('make_v3461.py', 'PY61'),
+              ('make_v3462.py', 'PY62'),
+              ('make_v3463.py', 'PY63'),
+              ('make_v3464.py', 'PY64'),
+          ]
+
+          for filename, tag in patches:
+              start_marker = f"          cat > /tmp/{filename} <<'{tag}'\n"
+              end_marker = f"\n          {tag}\n          python3 /tmp/{filename}"
+              start = workflow.index(start_marker) + len(start_marker)
+              end = workflow.index(end_marker, start)
+              script = textwrap.dedent(workflow[start:end])
+              out = Path('/tmp') / filename
+              out.write_text(script, encoding='utf-8')
+              print(f'Running proven patch {filename}')
+              subprocess.run(['python3', str(out)], check=True)
+
+          print('FIX2 patch chain V3.4.58 -> V3.4.64 reused successfully')
+          PYPATCHES
+
+      - name: Verify V3.4.64 source with robust semantic FIX3 checks
+        shell: bash
+        run: |
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml').read_text(encoding='utf-8')
+          step_marker = '      - name: Verify V3.4.64 source\n'
+          step_start = workflow.index(step_marker)
+          run_marker = '        run: |\n'
+          body_start = workflow.index(run_marker, step_start) + len(run_marker)
+          next_step = workflow.index('\n      - name:', body_start)
+          verify = textwrap.dedent(workflow[body_start:next_step])
+
+          old_start = verify.index("python3 - <<'PY64CHECK'\n")
+          old_end = verify.index('\nPY64CHECK', old_start) + len('\nPY64CHECK')
+
+          robust = r'''python3 - <<'PY64CHECK'
+          from pathlib import Path
+          import re
+
+          s=Path("android-project-v3460/app/src/main/java/it/portafoglio2026/v3/MainActivity.java").read_text(encoding="utf-8")
+          d=Path("android-project-v3460/app/src/main/java/it/portafoglio2026/v3/DbHelper.java").read_text(encoding="utf-8")
+          compact=lambda text: re.sub(r'\s+','',text)
+          sc=compact(s)
+
+          def require(label, condition):
+              if not condition:
+                  raise AssertionError(label)
+
+          require('DB_VERSION must remain 17', re.search(r'DB_VERSION\s*=\s*17', d) is not None)
+          require('baseline price ContentValues update missing', re.search(r'cv\.put\(\s*"price"\s*,\s*baseline\s*\[\s*i\s*\]\s*\)\s*;', s) is not None)
+          require('current_value must be quantity * price', re.search(r'current_value\s*=\s*quantity\s*\*\s*price', s) is not None)
+          require('portfolio cash must be forced to zero', 'UPDATEportfolio_statusSETcash=0,total_value=COALESCE(invested,0)' in sc)
+          require('position delete recovery trigger missing', 'positions_archive_before_delete_v3464' in s)
+          require('Trade Republic placeholder-14 trigger missing', 'positions_block_tr_placeholder14_v3464' in s)
+          require('dashboard cash UI hook missing', re.search(r'applyDashboardCashUiV3464\s*\(\s*\)\s*;', s) is not None)
+          require('home cash UI hook missing', re.search(r'applyHomeCashUiV3464\s*\(\s*\)\s*;', s) is not None)
+          require('V3.4.63 bottom-nav protection missing', 'forceBottomNavLabelsV3463' in s)
+          require('V3.4.62 historical UI protection missing', 'applyHistoricalUiSafetyV3462' in s)
+
+          m1 = re.search(r'void\s+repairTradeRepublicPlaceholderPricesV3464\s*\(\s*\)\s*\{', s)
+          require('Trade Republic repair method missing', m1 is not None)
+          tail = s[m1.end():]
+          m2 = re.search(r'void\s+applyDashboardCashUiV3464\s*\(\s*\)\s*\{', tail)
+          require('Trade Republic repair method boundary missing', m2 is not None)
+          repair = s[m1.start():m1.end()+m2.start()]
+          repair_compact=compact(repair)
+          require('Trade Republic repair must not overwrite quantity', 'cv.put("quantity"' not in repair_compact)
+          require('Trade Republic repair must not overwrite PMC', 'cv.put("pmc"' not in repair_compact)
+          require('Trade Republic repair safety comment missing', re.search(r'quantity\s+and\s+PMC\s+are\s+NEVER\s+overwritten', repair, re.I) is not None)
+
+          print("V3.4.64 FIX3 semantic global cash / Trade Republic / recovery regression OK")
+          PY64CHECK'''
+
+          verify = verify[:old_start] + robust + verify[old_end:]
+          script = Path('/tmp/verify_v3464_fix3.sh')
+          script.write_text('set -euo pipefail\n' + verify + '\n', encoding='utf-8')
+          print('Prepared original FIX2 verifier with only PY64CHECK replaced by robust FIX3 checks')
+          PYVERIFY
+          bash /tmp/verify_v3464_fix3.sh
+
+      - name: Build signed V3.4.64 DEV FIX3 APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.64 DEV FIX3 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.64 DEV FIX3 signed APK verified"
+
+      - name: Upload signed V3.4.64 DEV FIX3 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3464-DEV-GLOBAL-CASH-POSITION-SAFETY-FIX3-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
