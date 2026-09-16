@@ -1,0 +1,2039 @@
+name: Build Portafoglio 2026 V3.4.70 DEV Accounting Rules & Italian UI FIX3
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3470-dev-accounting-rules-italian-ui-FIX3.yml"
+      - ".github/workflows/build-portafoglio-v3470-dev-accounting-rules-italian-ui-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3470-dev-accounting-rules-italian-ui-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3469-dev-compact-bottom-spacing.yml"
+      - ".github/workflows/build-portafoglio-v3468-dev-bottom-spacing-refine.yml"
+      - ".github/workflows/build-portafoglio-v3467-dev-bottom-scroll-safety.yml"
+      - ".github/workflows/build-portafoglio-v3466-dev-bottom-nav-final-fix-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3466-dev-bottom-nav-final-fix.yml"
+      - ".github/workflows/build-portafoglio-v3465-dev-mobile-ui-fix.yml"
+      - ".github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3456-full-bold-readability.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Extract V3.4.44 source
+        run: |
+          rm -rf android-project-v3460
+          mkdir android-project-v3460
+          unzip -q "portafoglio-v3444-dev.zip" -d android-project-v3460
+
+      - name: Reuse proven V3.4.56 patch
+        run: |
+          python3 - <<'PY56'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/build-portafoglio-v3456-full-bold-readability.yml').read_text(encoding='utf-8')
+          start_marker = "          cat > /tmp/make_v3456.py <<'PY'\n"
+          end_marker = "\n          PY\n          python3 /tmp/make_v3456.py"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          script = textwrap.dedent(workflow[start:end])
+          script = script.replace('android-project-v3456', 'android-project-v3460')
+          Path('/tmp/make_v3456_for_v3460.py').write_text(script, encoding='utf-8')
+          print('Extracted proven V3.4.56 patch script for V3.4.64 FIX4 base')
+          PY56
+          python3 /tmp/make_v3456_for_v3460.py
+
+      - name: Reuse proven V3.4.58 through V3.4.64 patches from FIX2
+        shell: bash
+        run: |
+          python3 - <<'PYPATCHES'
+          from pathlib import Path
+          import subprocess
+          import textwrap
+
+          workflow_path = Path('.github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml')
+          workflow = workflow_path.read_text(encoding='utf-8')
+          patches = [
+              ('make_v3458.py', 'PY58'),
+              ('make_v3459.py', 'PY59'),
+              ('make_v3460.py', 'PY60'),
+              ('make_v3461.py', 'PY61'),
+              ('make_v3462.py', 'PY62'),
+              ('make_v3463.py', 'PY63'),
+              ('make_v3464.py', 'PY64'),
+          ]
+
+          for filename, tag in patches:
+              start_marker = f"          cat > /tmp/{filename} <<'{tag}'\n"
+              end_marker = f"\n          {tag}\n          python3 /tmp/{filename}"
+              start = workflow.index(start_marker) + len(start_marker)
+              end = workflow.index(end_marker, start)
+              script = textwrap.dedent(workflow[start:end])
+              out = Path('/tmp') / filename
+              out.write_text(script, encoding='utf-8')
+              print(f'Running proven patch {filename}')
+              subprocess.run(['python3', str(out)], check=True)
+
+          print('FIX2 patch chain V3.4.58 -> V3.4.64 reused successfully')
+          PYPATCHES
+
+      - name: Verify V3.4.64 safety base before V3.4.65 UI patch
+        shell: bash
+        run: |
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml').read_text(encoding='utf-8')
+          step_marker = '      - name: Verify V3.4.64 source\n'
+          step_start = workflow.index(step_marker)
+          run_marker = '        run: |\n'
+          body_start = workflow.index(run_marker, step_start) + len(run_marker)
+          next_step = workflow.index('\n      - name:', body_start)
+          verify = textwrap.dedent(workflow[body_start:next_step])
+
+          old_start = verify.index("python3 - <<'PY64CHECK'\n")
+          old_end = verify.index('\nPY64CHECK', old_start) + len('\nPY64CHECK')
+
+          robust = r'''python3 - <<'PY64CHECK'
+          from pathlib import Path
+          import re
+
+          s=Path("android-project-v3460/app/src/main/java/it/portafoglio2026/v3/MainActivity.java").read_text(encoding="utf-8")
+          d=Path("android-project-v3460/app/src/main/java/it/portafoglio2026/v3/DbHelper.java").read_text(encoding="utf-8")
+          compact=lambda text: re.sub(r'\s+','',text)
+          sc=compact(s)
+
+          def require(label, condition):
+              if not condition:
+                  raise AssertionError(label)
+
+          require('DB_VERSION must remain 17', re.search(r'DB_VERSION\s*=\s*17', d) is not None)
+          require('baseline price ContentValues update missing', re.search(r'cv\.put\(\s*"price"\s*,\s*baseline\s*\[\s*i\s*\]\s*\)\s*;', s) is not None)
+          require('current_value must be quantity * price', re.search(r'current_value\s*=\s*quantity\s*\*\s*price', s) is not None)
+          require('portfolio cash must be forced to zero', 'UPDATEportfolio_statusSETcash=0,total_value=COALESCE(invested,0)' in sc)
+          require('position delete recovery trigger missing', 'positions_archive_before_delete_v3464' in s)
+          require('Trade Republic placeholder-14 trigger missing', 'positions_block_tr_placeholder14_v3464' in s)
+          require('dashboard cash UI hook missing', re.search(r'applyDashboardCashUiV3464\s*\(\s*\)\s*;', s) is not None)
+          require('home cash UI hook missing', re.search(r'applyHomeCashUiV3464\s*\(\s*\)\s*;', s) is not None)
+          require('V3.4.63 bottom-nav protection missing', 'forceBottomNavLabelsV3463' in s)
+          require('V3.4.62 historical UI protection missing', 'applyHistoricalUiSafetyV3462' in s)
+          require('truncated Movimen visible setter must not exist', re.search(r'\.setText\(\s*"Movimen"\s*\)', s) is None)
+          require('truncated Portafogl visible setter must not exist', re.search(r'\.setText\(\s*"Portafogl"\s*\)', s) is None)
+
+          m1 = re.search(r'void\s+repairTradeRepublicPlaceholderPricesV3464\s*\(\s*\)\s*\{', s)
+          require('Trade Republic repair method missing', m1 is not None)
+          tail = s[m1.end():]
+          m2 = re.search(r'void\s+applyDashboardCashUiV3464\s*\(\s*\)\s*\{', tail)
+          require('Trade Republic repair method boundary missing', m2 is not None)
+          repair = s[m1.start():m1.end()+m2.start()]
+          repair_compact=compact(repair)
+          require('Trade Republic repair must not overwrite quantity', 'cv.put("quantity"' not in repair_compact)
+          require('Trade Republic repair must not overwrite PMC', 'cv.put("pmc"' not in repair_compact)
+          require('Trade Republic repair safety comment missing', re.search(r'quantity\s+and\s+PMC\s+are\s+NEVER\s+overwritten', repair, re.I) is not None)
+
+          print("V3.4.64 FIX4 semantic global cash / Trade Republic / recovery regression OK")
+          PY64CHECK'''
+
+          verify = verify[:old_start] + robust + verify[old_end:]
+
+          # FIX4: the old FIX2 grep treated startsWith("Movimen") as a visible
+          # truncated label. Keep the regression protection, but only reject
+          # an actual UI setText("Movimen") assignment.
+          old_movimen = '''if grep -Fq '\"Movimen\"' "$MAIN"; then
+            echo "ERROR: truncated Movimen source label remains" >&2
+            exit 1
+          fi'''
+          new_movimen = '''if grep -Fq 'setText(\"Movimen\")' "$MAIN"; then
+            echo "ERROR: truncated Movimen visible label remains" >&2
+            exit 1
+          fi'''
+          if old_movimen not in verify:
+              raise RuntimeError('FIX4 could not locate obsolete Movimen grep')
+          verify = verify.replace(old_movimen, new_movimen, 1)
+          script = Path('/tmp/verify_v3464_fix3.sh')
+          script.write_text('set -euo pipefail\n' + verify + '\n', encoding='utf-8')
+          print('Prepared original FIX2 verifier with only PY64CHECK replaced by robust FIX4 checks')
+          PYVERIFY
+          bash /tmp/verify_v3464_fix3.sh
+
+      - name: Patch V3.4.65 mobile UI layout
+        shell: bash
+        run: |
+          python3 - <<'PY65'
+          from pathlib import Path
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+
+          assert 'versionCode 106' in gradle
+          assert 'versionName "3.4.64-dev-global-cash-position-safety"' in gradle
+          assert 'DEV 3.4.64' in main
+          assert 'forceBottomNavLabelsV3463' in main
+          assert 'applyDashboardCashUiV3464();' in main
+          assert 'applyHomeCashUiV3464();' in main
+          assert 'repairTradeRepublicPlaceholderPricesV3464' in main
+          assert 'positions_archive_before_delete_v3464' in main
+          assert 'positions_block_tr_placeholder14_v3464' in main
+
+          gradle=gradle.replace('versionCode 106','versionCode 107',1)
+          gradle=gradle.replace(
+              'versionName "3.4.64-dev-global-cash-position-safety"',
+              'versionName "3.4.65-dev-mobile-ui-fix"',
+              1
+          )
+          main=main.replace('DEV 3.4.64','DEV 3.4.65')
+
+          # Run the new mobile-layout pass whenever Dashboard/Home is rebuilt.
+          main=main.replace(
+              'applyDashboardCashUiV3464();',
+              'applyDashboardCashUiV3464();\n                  applyMobileUiV3465();',
+              1
+          )
+          main=main.replace(
+              'applyHomeCashUiV3464();',
+              'applyHomeCashUiV3464();\n                  applyMobileUiV3465();',
+              1
+          )
+
+          def matching_brace(text, open_pos):
+              depth=0;i=open_pos;in_str=in_char=in_line=in_block=False;esc=False
+              while i<len(text):
+                  c=text[i];n=text[i+1] if i+1<len(text) else ''
+                  if in_line:
+                      if c=='\n':in_line=False
+                      i+=1;continue
+                  if in_block:
+                      if c=='*' and n=='/':in_block=False;i+=2;continue
+                      i+=1;continue
+                  if in_str:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='"':in_str=False
+                      i+=1;continue
+                  if in_char:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":in_char=False
+                      i+=1;continue
+                  if c=='/' and n=='/':in_line=True;i+=2;continue
+                  if c=='/' and n=='*':in_block=True;i+=2;continue
+                  if c=='"':in_str=True;i+=1;continue
+                  if c=="'":in_char=True;i+=1;continue
+                  if c=='{':depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          # Apply the real text-width fix each time the persistent bottom nav is refreshed.
+          p=main.find('void fixBottomNavLabelsV3460()')
+          if p<0: raise RuntimeError('fixBottomNavLabelsV3460 not found')
+          o=main.find('{',p); c=matching_brace(main,o)
+          nav_method=main[p:c+1]
+          marker='forceBottomNavLabelsV3463(bottomNav);'
+          if marker not in nav_method: raise RuntimeError('V3.4.63 bottom-nav hook not found')
+          nav_method=nav_method.replace(marker,marker+'\n                  applyBottomNavMobileV3465();',1)
+          main=main[:p]+nav_method+main[c+1:]
+
+          helpers=r'''
+              int dpV3465(float value){
+                  return Math.round(value*getResources().getDisplayMetrics().density);
+              }
+
+              String normalizedUiTextV3465(CharSequence q){
+                  if(q==null)return "";
+                  return q.toString().replace('\n',' ').replaceAll("\\s+"," ").trim();
+              }
+
+              void applyBottomNavMobileV3465(){
+                  if(bottomNav==null)return;
+                  tuneBottomNavTreeV3465(bottomNav);
+              }
+
+              void tuneBottomNavTreeV3465(android.view.View v){
+                  if(v instanceof android.widget.TextView){
+                      android.widget.TextView t=(android.widget.TextView)v;
+                      String s=normalizedUiTextV3465(t.getText());
+                      boolean portfolios=s.startsWith("Portafog");
+                      boolean movements=s.startsWith("Movimen");
+                      boolean navLabel=portfolios||movements||"Home".equals(s)||"Proventi".equals(s)||"Altro".equals(s);
+                      if(navLabel){
+                          if(portfolios)t.setText("Portafogli");
+                          else if(movements)t.setText("Movimenti");
+                          t.setSingleLine(true);
+                          t.setMaxLines(1);
+                          t.setEllipsize(null);
+                          t.setHorizontallyScrolling(false);
+                          t.setIncludeFontPadding(false);
+                          t.setGravity(android.view.Gravity.CENTER);
+                          t.setPadding(0,t.getPaddingTop(),0,t.getPaddingBottom());
+                          t.setMinWidth(0);
+                          t.setMinimumWidth(0);
+                          // Text scale changes the actual glyph width before clipping.
+                          t.setScaleX(1f);
+                          if(portfolios||movements){
+                              t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP,8f);
+                              t.setTextScaleX(0.76f);
+                          }else{
+                              t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP,9f);
+                              t.setTextScaleX(0.94f);
+                          }
+                      }
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++)tuneBottomNavTreeV3465(g.getChildAt(i));
+                  }
+              }
+
+              boolean dashboardActionV3465(String s){
+                  return s.contains("Cerca titolo")||s.contains("Inserisci titolo")||
+                         s.contains("Importa estratto conto")||s.contains("Aggiornamento manuale");
+              }
+
+              boolean containsDashboardActionV3465(android.view.View v){
+                  if(v instanceof android.widget.TextView){
+                      if(dashboardActionV3465(normalizedUiTextV3465(((android.widget.TextView)v).getText())))return true;
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++)if(containsDashboardActionV3465(g.getChildAt(i)))return true;
+                  }
+                  return false;
+              }
+
+              void tuneDashboardButtonsV3465(android.view.View v){
+                  if(v instanceof android.widget.Button){
+                      android.widget.Button b=(android.widget.Button)v;
+                      String s=normalizedUiTextV3465(b.getText());
+                      if(dashboardActionV3465(s)){
+                          b.setAllCaps(false);
+                          b.setSingleLine(false);
+                          b.setMaxLines(2);
+                          b.setEllipsize(null);
+                          b.setHorizontallyScrolling(false);
+                          b.setGravity(android.view.Gravity.CENTER);
+                          b.setIncludeFontPadding(false);
+                          b.setTextScaleX(0.96f);
+                          b.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP,s.contains("Cerca titolo")?15f:14f);
+                          if(android.os.Build.VERSION.SDK_INT>=26){
+                              b.setAutoSizeTextTypeUniformWithConfiguration(12,16,1,android.util.TypedValue.COMPLEX_UNIT_SP);
+                          }
+                          b.setPadding(dpV3465(8),dpV3465(8),dpV3465(8),dpV3465(8));
+                          b.setMinHeight(dpV3465(58));
+                          android.view.ViewGroup.LayoutParams lp=b.getLayoutParams();
+                          if(lp!=null){
+                              lp.height=android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
+                              b.setLayoutParams(lp);
+                          }
+                          android.view.ViewParent parent=b.getParent();
+                          if(parent instanceof android.view.View){
+                              android.view.View pv=(android.view.View)parent;
+                              android.view.ViewGroup.LayoutParams plp=pv.getLayoutParams();
+                              if(plp!=null&&plp.height>0&&plp.height<dpV3465(74)){
+                                  plp.height=android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
+                                  pv.setLayoutParams(plp);
+                              }
+                              pv.setMinimumHeight(dpV3465(58));
+                          }
+                      }
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++)tuneDashboardButtonsV3465(g.getChildAt(i));
+                  }
+              }
+
+              void padDashboardScrollableContentV3465(android.view.View v){
+                  boolean scroll=(v instanceof android.widget.ScrollView)||v.getClass().getName().contains("NestedScrollView");
+                  if(scroll&&containsDashboardActionV3465(v)){
+                      int safeBottom=Math.max(v.getPaddingBottom(),dpV3465(96));
+                      v.setPadding(v.getPaddingLeft(),v.getPaddingTop(),v.getPaddingRight(),safeBottom);
+                      if(v instanceof android.view.ViewGroup)((android.view.ViewGroup)v).setClipToPadding(false);
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++)padDashboardScrollableContentV3465(g.getChildAt(i));
+                  }
+              }
+
+              void runMobileUiPassV3465(android.view.View root){
+                  applyBottomNavMobileV3465();
+                  tuneDashboardButtonsV3465(root);
+                  padDashboardScrollableContentV3465(root);
+              }
+
+              void applyMobileUiV3465(){
+                  final android.view.View root=findViewById(android.R.id.content);
+                  if(root==null)return;
+                  runMobileUiPassV3465(root);
+                  root.post(new Runnable(){
+                      @Override public void run(){runMobileUiPassV3465(root);}
+                  });
+                  root.postDelayed(new Runnable(){
+                      @Override public void run(){runMobileUiPassV3465(root);}
+                  },300);
+              }
+          '''
+
+          last=main.rfind('}')
+          if last<0: raise RuntimeError('MainActivity closing brace not found')
+          main=main[:last]+helpers+'\n'+main[last:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          # V3.4.65 is UI-only: database source must be byte-for-byte untouched.
+          assert db_path.read_bytes()==db_before
+          print('V3.4.65 mobile UI layout patch applied; database untouched')
+          PY65
+
+      - name: Patch V3.4.66 bottom navigation final layout FIX2
+        shell: bash
+        run: |
+          python3 - <<'PY66'
+          from pathlib import Path
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+
+          assert 'versionCode 107' in gradle
+          assert 'versionName "3.4.65-dev-mobile-ui-fix"' in gradle
+          assert 'DEV 3.4.65' in main
+          assert 'void forceBottomNavLabelsV3463(android.view.View v)' in main
+          assert 'void applyBottomNavMobileV3465()' in main
+          assert 'positions_archive_before_delete_v3464' in main
+          assert 'positions_block_tr_placeholder14_v3464' in main
+
+          gradle=gradle.replace('versionCode 107','versionCode 108',1)
+          gradle=gradle.replace(
+              'versionName "3.4.65-dev-mobile-ui-fix"',
+              'versionName "3.4.66-dev-bottom-nav-final-fix"',
+              1
+          )
+          main=main.replace('DEV 3.4.65','DEV 3.4.66')
+
+          def matching_brace(text, open_pos):
+              depth=0;i=open_pos;in_str=in_char=in_line=in_block=False;esc=False
+              while i<len(text):
+                  c=text[i];n=text[i+1] if i+1<len(text) else ''
+                  if in_line:
+                      if c=='\n':in_line=False
+                      i+=1;continue
+                  if in_block:
+                      if c=='*' and n=='/':in_block=False;i+=2;continue
+                      i+=1;continue
+                  if in_str:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='"':in_str=False
+                      i+=1;continue
+                  if in_char:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":in_char=False
+                      i+=1;continue
+                  if c=='/' and n=='/':in_line=True;i+=2;continue
+                  if c=='/' and n=='*':in_block=True;i+=2;continue
+                  if c=='"':in_str=True;i+=1;continue
+                  if c=="'":in_char=True;i+=1;continue
+                  if c=='{':depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          sig='void forceBottomNavLabelsV3463(android.view.View v)'
+          p=main.find(sig)
+          if p<0: raise RuntimeError('forceBottomNavLabelsV3463 not found')
+          o=main.find('{',p); c=matching_brace(main,o)
+          replacement=r'''void forceBottomNavLabelsV3463(android.view.View v){
+                  if(v instanceof android.widget.TextView){
+                      android.widget.TextView t=(android.widget.TextView)v;
+                      CharSequence q=t.getText();
+                      String s=q==null?"":q.toString().replace('\n',' ').replaceAll("\\s+"," ").trim();
+                      boolean portfolios=s.startsWith("Portafog");
+                      boolean movements=s.startsWith("Movimen");
+                      boolean navLabel=portfolios||movements||"Home".equals(s)||"Proventi".equals(s)||"Altro".equals(s);
+                      if(navLabel){
+                          if(portfolios)t.setText("Portafogli");
+                          else if(movements)t.setText("Movimenti");
+                          if(android.os.Build.VERSION.SDK_INT>=26){
+                              t.setAutoSizeTextTypeWithDefaults(android.widget.TextView.AUTO_SIZE_TEXT_TYPE_NONE);
+                          }
+                          t.setSingleLine(true);
+                          t.setMaxLines(1);
+                          t.setEllipsize(null);
+                          t.setHorizontallyScrolling(false);
+                          t.setIncludeFontPadding(false);
+                          t.setGravity(android.view.Gravity.CENTER);
+                          t.setScaleX(1f);
+                          t.setLetterSpacing(portfolios||movements?-0.035f:-0.015f);
+                          t.setTextScaleX(portfolios||movements?0.70f:0.90f);
+                          float px=dpV3465(portfolios||movements?8.0f:9.0f);
+                          t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px);
+                          t.setPadding(0,0,0,0);
+                          t.setMinWidth(0);
+                          t.setMinimumWidth(0);
+                          t.setMaxWidth(Integer.MAX_VALUE);
+                          android.view.ViewGroup.LayoutParams lp=t.getLayoutParams();
+                          if(lp!=null){
+                              lp.width=android.view.ViewGroup.LayoutParams.MATCH_PARENT;
+                              t.setLayoutParams(lp);
+                          }
+                      }
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      g.setClipChildren(false);
+                      g.setClipToPadding(false);
+                      for(int i=0;i<g.getChildCount();i++)forceBottomNavLabelsV3463(g.getChildAt(i));
+                  }
+              }'''
+          main=main[:p]+replacement+main[c+1:]
+
+          sig='void applyBottomNavMobileV3465()'
+          p=main.find(sig)
+          if p<0: raise RuntimeError('applyBottomNavMobileV3465 not found')
+          o=main.find('{',p); c=matching_brace(main,o)
+          replacement=r'''void applyBottomNavMobileV3465(){
+                  if(bottomNav==null)return;
+                  applyBottomNavFinalV3466();
+                  bottomNav.post(new Runnable(){
+                      @Override public void run(){applyBottomNavFinalV3466();}
+                  });
+                  bottomNav.postDelayed(new Runnable(){
+                      @Override public void run(){applyBottomNavFinalV3466();}
+                  },80);
+                  bottomNav.postDelayed(new Runnable(){
+                      @Override public void run(){applyBottomNavFinalV3466();}
+                  },350);
+                  bottomNav.postDelayed(new Runnable(){
+                      @Override public void run(){applyBottomNavFinalV3466();}
+                  },900);
+                  bottomNav.postDelayed(new Runnable(){
+                      @Override public void run(){applyBottomNavFinalV3466();}
+                  },1500);
+              }'''
+          main=main[:p]+replacement+main[c+1:]
+
+          helpers=r'''
+              void applyBottomNavFinalV3466(){
+                  if(bottomNav==null)return;
+                  normalizeBottomNavRowsV3466(bottomNav);
+                  forceBottomNavLabelsV3463(bottomNav);
+                  bottomNav.requestLayout();
+                  bottomNav.invalidate();
+              }
+
+              void normalizeBottomNavRowsV3466(android.view.View v){
+                  if(v instanceof android.widget.LinearLayout){
+                      android.widget.LinearLayout row=(android.widget.LinearLayout)v;
+                      if(row.getOrientation()==android.widget.LinearLayout.HORIZONTAL&&row.getChildCount()==5){
+                          row.setWeightSum(5f);
+                          row.setClipChildren(false);
+                          row.setClipToPadding(false);
+                          for(int i=0;i<row.getChildCount();i++){
+                              android.view.View child=row.getChildAt(i);
+                              android.view.ViewGroup.LayoutParams raw=child.getLayoutParams();
+                              if(raw instanceof android.widget.LinearLayout.LayoutParams){
+                                  android.widget.LinearLayout.LayoutParams lp=(android.widget.LinearLayout.LayoutParams)raw;
+                                  lp.width=0;
+                                  lp.weight=1f;
+                                  child.setLayoutParams(lp);
+                              }
+                              child.setMinimumWidth(0);
+                              child.setPadding(0,child.getPaddingTop(),0,child.getPaddingBottom());
+                              if(child instanceof android.view.ViewGroup){
+                                  ((android.view.ViewGroup)child).setClipChildren(false);
+                                  ((android.view.ViewGroup)child).setClipToPadding(false);
+                              }
+                          }
+                      }
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++)normalizeBottomNavRowsV3466(g.getChildAt(i));
+                  }
+              }
+          '''
+
+          last=main.rfind('}')
+          if last<0: raise RuntimeError('MainActivity closing brace not found')
+          main=main[:last]+helpers+'\n'+main[last:]
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+          assert db_path.read_bytes()==db_before
+          print('V3.4.66 bottom navigation final patch applied; database untouched')
+          PY66
+
+      - name: Verify V3.4.66 FIX2 bottom nav and V3.4.64 safety regression
+        shell: bash
+        run: |
+          python3 - <<'PY65CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+          compact=lambda text: re.sub(r'\s+','',text)
+
+          assert 'versionCode 108' in g
+          assert 'versionName "3.4.66-dev-bottom-nav-final-fix"' in g
+          assert 'DEV 3.4.66' in s
+          assert re.search(r'DB_VERSION\s*=\s*17',d)
+
+          # New mobile UI fixes.
+          assert 'void applyMobileUiV3465()' in s
+          assert 'void applyBottomNavMobileV3465()' in s
+          assert 't.setTextScaleX(0.76f);' in s
+          assert 'b.setMaxLines(2);' in s
+          assert 'b.setMinHeight(dpV3465(58));' in s
+          assert 'lp.height=android.view.ViewGroup.LayoutParams.WRAP_CONTENT;' in s
+          assert 'setAutoSizeTextTypeUniformWithConfiguration' in s
+          assert 'dpV3465(96)' in s
+          assert 'setClipToPadding(false)' in s
+          assert 'applyDashboardCashUiV3464();' in s and 'applyMobileUiV3465();' in s
+          assert 'applyHomeCashUiV3464();' in s
+          assert 'applyBottomNavMobileV3465();' in s
+          assert 'void applyBottomNavFinalV3466()' in s
+          assert 'void normalizeBottomNavRowsV3466(android.view.View v)' in s
+          assert 'setAutoSizeTextTypeWithDefaults(android.widget.TextView.AUTO_SIZE_TEXT_TYPE_NONE)' in s
+          assert 'COMPLEX_UNIT_PX' in s
+          assert 'dpV3465(portfolios||movements?8.0f:9.0f)' in s
+          assert 't.setTextScaleX(portfolios||movements?0.70f:0.90f);' in s
+          assert 'row.getChildCount()==5' in s
+          assert 'lp.width=0;' in s and 'lp.weight=1f;' in s
+          assert '},1500);' in s
+          assert re.search(r'\.setText\(\s*"Portafogl"\s*\)',s) is None
+          assert re.search(r'\.setText\(\s*"Movimen"\s*\)',s) is None
+
+          # Preserve every critical V3.4.64 data-safety protection.
+          assert 'positions_archive_before_delete_v3464' in s
+          assert 'positions_block_tr_placeholder14_v3464' in s
+          assert 'repairTradeRepublicPlaceholderPricesV3464' in s
+          assert re.search(r'cv\.put\(\s*"price"\s*,\s*baseline\s*\[\s*i\s*\]\s*\)\s*;',s)
+          assert re.search(r'current_value\s*=\s*quantity\s*\*\s*price',s)
+          assert 'UPDATEportfolio_statusSETcash=0,total_value=COALESCE(invested,0)' in compact(s)
+          assert 'forceBottomNavLabelsV3463' in s
+          assert 'applyHistoricalUiSafetyV3462' in s
+
+          m1=re.search(r'void\s+repairTradeRepublicPlaceholderPricesV3464\s*\(\s*\)\s*\{',s)
+          assert m1
+          m2=re.search(r'void\s+applyDashboardCashUiV3464\s*\(\s*\)\s*\{',s[m1.end():])
+          assert m2
+          repair=s[m1.start():m1.end()+m2.start()]
+          rc=compact(repair)
+          assert 'cv.put("quantity"' not in rc
+          assert 'cv.put("pmc"' not in rc
+          assert re.search(r'quantity\s+and\s+PMC\s+are\s+NEVER\s+overwritten',repair,re.I)
+
+          print('V3.4.66 bottom nav + V3.4.64 safety regression OK')
+          PY65CHECK
+
+      - name: Patch V3.4.67 bottom scroll safety
+        shell: bash
+        run: |
+          python3 - <<'PY67'
+          from pathlib import Path
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+
+          assert 'versionCode 108' in gradle
+          assert 'versionName \"3.4.66-dev-bottom-nav-final-fix\"' in gradle
+          assert 'DEV 3.4.66' in main
+          assert 'void padDashboardScrollableContentV3465(android.view.View v)' in main
+          assert 'void applyBottomNavFinalV3466()' in main
+          assert 'positions_archive_before_delete_v3464' in main
+          assert 'positions_block_tr_placeholder14_v3464' in main
+
+          gradle=gradle.replace('versionCode 108','versionCode 109',1)
+          gradle=gradle.replace(
+              'versionName \"3.4.66-dev-bottom-nav-final-fix\"',
+              'versionName \"3.4.67-dev-bottom-scroll-safety\"',
+              1
+          )
+          main=main.replace('DEV 3.4.66','DEV 3.4.67')
+
+          def matching_brace(text, open_pos):
+              depth=0;i=open_pos;in_str=in_char=in_line=in_block=False;esc=False
+              while i<len(text):
+                  c=text[i];n=text[i+1] if i+1<len(text) else ''
+                  if in_line:
+                      if c=='\n':in_line=False
+                      i+=1;continue
+                  if in_block:
+                      if c=='*' and n=='/':in_block=False;i+=2;continue
+                      i+=1;continue
+                  if in_str:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='\"':in_str=False
+                      i+=1;continue
+                  if in_char:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":in_char=False
+                      i+=1;continue
+                  if c=='/' and n=='/':in_line=True;i+=2;continue
+                  if c=='/' and n=='*':in_block=True;i+=2;continue
+                  if c=='\"':in_str=True;i+=1;continue
+                  if c=="'":in_char=True;i+=1;continue
+                  if c=='{':depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          sig='void padDashboardScrollableContentV3465(android.view.View v)'
+          p=main.find(sig)
+          if p<0: raise RuntimeError('padDashboardScrollableContentV3465 not found')
+          o=main.find('{',p); c=matching_brace(main,o)
+          replacement=r'''void padDashboardScrollableContentV3465(android.view.View v){
+                  boolean scroll=(v instanceof android.widget.ScrollView)||v.getClass().getName().contains("NestedScrollView");
+                  if(scroll&&containsDashboardActionV3465(v)){
+                      int navHeight=bottomNav==null?0:bottomNav.getHeight();
+                      int safeBottom=Math.max(dpV3465(144),navHeight+dpV3465(32));
+
+                      // Extend the real scrollable child so the final portfolio row
+                      // can always move completely above the persistent bottom bar.
+                      if(v instanceof android.view.ViewGroup){
+                          android.view.ViewGroup vg=(android.view.ViewGroup)v;
+                          vg.setClipToPadding(false);
+                          if(vg.getChildCount()>0){
+                              android.view.View child=vg.getChildAt(0);
+                              int childBottom=Math.max(child.getPaddingBottom(),safeBottom);
+                              child.setPadding(
+                                  child.getPaddingLeft(),child.getPaddingTop(),
+                                  child.getPaddingRight(),childBottom
+                              );
+                          }
+                      }
+
+                      // Small viewport buffer as a second safety layer.
+                      int viewportBottom=Math.max(v.getPaddingBottom(),dpV3465(24));
+                      v.setPadding(v.getPaddingLeft(),v.getPaddingTop(),v.getPaddingRight(),viewportBottom);
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++)padDashboardScrollableContentV3465(g.getChildAt(i));
+                  }
+              }'''
+          main=main[:p]+replacement+main[c+1:]
+
+          # Re-run after bottom navigation has a measured height.
+          sig='void applyMobileUiV3465()'
+          p=main.find(sig)
+          if p<0: raise RuntimeError('applyMobileUiV3465 not found')
+          o=main.find('{',p); c=matching_brace(main,o)
+          body=main[p:c+1]
+          if '},700);' not in body:
+              anchor='''        root.postDelayed(new Runnable(){\n            @Override public void run(){runMobileUiPassV3465(root);}\n        },300);'''
+              extra='''        root.postDelayed(new Runnable(){\n            @Override public void run(){runMobileUiPassV3465(root);}\n        },700);'''
+              if anchor not in body:
+                  raise RuntimeError('V3.4.65 delayed mobile pass marker not found')
+              body=body.replace(anchor,anchor+'\n'+extra,1)
+          main=main[:p]+body+main[c+1:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+          assert db_path.read_bytes()==db_before
+          print('V3.4.67 bottom scroll safety applied; database untouched')
+          PY67
+
+      - name: Verify V3.4.67 bottom scroll and data safety regression
+        shell: bash
+        run: |
+          python3 - <<'PY67CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+          compact=lambda text: re.sub(r'\s+','',text)
+
+          assert 'versionCode 109' in g
+          assert 'versionName \"3.4.67-dev-bottom-scroll-safety\"' in g
+          assert 'DEV 3.4.67' in s
+          assert re.search(r'DB_VERSION\s*=\s*17',d)
+
+          assert 'int navHeight=bottomNav==null?0:bottomNav.getHeight();' in s
+          assert 'Math.max(dpV3465(144),navHeight+dpV3465(32))' in s
+          assert 'child.getPaddingBottom(),safeBottom' in s
+          assert 'dpV3465(24)' in s
+          assert '},700);' in s
+
+          assert 'void applyBottomNavFinalV3466()' in s
+          assert 'void normalizeBottomNavRowsV3466(android.view.View v)' in s
+          assert 'setAutoSizeTextTypeWithDefaults(android.widget.TextView.AUTO_SIZE_TEXT_TYPE_NONE)' in s
+          assert 'COMPLEX_UNIT_PX' in s
+          assert 't.setTextScaleX(portfolios||movements?0.70f:0.90f);' in s
+          assert 'row.getChildCount()==5' in s
+          assert 'lp.width=0;' in s and 'lp.weight=1f;' in s
+          assert re.search(r'\.setText\(\s*\"Portafogl\"\s*\)',s) is None
+          assert re.search(r'\.setText\(\s*\"Movimen\"\s*\)',s) is None
+
+          assert 'b.setMaxLines(2);' in s
+          assert 'b.setMinHeight(dpV3465(58));' in s
+          assert 'setAutoSizeTextTypeUniformWithConfiguration' in s
+
+          assert 'positions_archive_before_delete_v3464' in s
+          assert 'positions_block_tr_placeholder14_v3464' in s
+          assert 'repairTradeRepublicPlaceholderPricesV3464' in s
+          assert re.search(r'cv\.put\(\s*\"price\"\s*,\s*baseline\s*\[\s*i\s*\]\s*\)\s*;',s)
+          assert re.search(r'current_value\s*=\s*quantity\s*\*\s*price',s)
+          assert 'UPDATEportfolio_statusSETcash=0,total_value=COALESCE(invested,0)' in compact(s)
+          assert 'applyHistoricalUiSafetyV3462' in s
+
+          m1=re.search(r'void\s+repairTradeRepublicPlaceholderPricesV3464\s*\(\s*\)\s*\{',s)
+          assert m1
+          m2=re.search(r'void\s+applyDashboardCashUiV3464\s*\(\s*\)\s*\{',s[m1.end():])
+          assert m2
+          repair=s[m1.start():m1.end()+m2.start()]
+          rc=compact(repair)
+          assert 'cv.put(\"quantity\"' not in rc
+          assert 'cv.put(\"pmc\"' not in rc
+          assert re.search(r'quantity\s+and\s+PMC\s+are\s+NEVER\s+overwritten',repair,re.I)
+
+          print('V3.4.67 bottom scroll + V3.4.66 UI + V3.4.64 data safety regression OK')
+          PY67CHECK
+
+      - name: Patch V3.4.68 bottom spacing refine
+        shell: bash
+        run: |
+          python3 - <<'PY68'
+          from pathlib import Path
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+
+          assert 'versionCode 109' in gradle
+          assert 'versionName "3.4.67-dev-bottom-scroll-safety"' in gradle
+          assert 'DEV 3.4.67' in main
+          assert 'void padDashboardScrollableContentV3465(android.view.View v)' in main
+          assert 'positions_archive_before_delete_v3464' in main
+          assert 'positions_block_tr_placeholder14_v3464' in main
+
+          gradle=gradle.replace('versionCode 109','versionCode 110',1)
+          gradle=gradle.replace(
+              'versionName "3.4.67-dev-bottom-scroll-safety"',
+              'versionName "3.4.68-dev-bottom-spacing-refine"',
+              1
+          )
+          main=main.replace('DEV 3.4.67','DEV 3.4.68')
+
+          def matching_brace(text, open_pos):
+              depth=0;i=open_pos;in_str=in_char=in_line=in_block=False;esc=False
+              while i<len(text):
+                  c=text[i];n=text[i+1] if i+1<len(text) else ''
+                  if in_line:
+                      if c=='\n':in_line=False
+                      i+=1;continue
+                  if in_block:
+                      if c=='*' and n=='/':in_block=False;i+=2;continue
+                      i+=1;continue
+                  if in_str:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='"':in_str=False
+                      i+=1;continue
+                  if in_char:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":in_char=False
+                      i+=1;continue
+                  if c=='/' and n=='/':in_line=True;i+=2;continue
+                  if c=='/' and n=='*':in_block=True;i+=2;continue
+                  if c=='"':in_str=True;i+=1;continue
+                  if c=="'":in_char=True;i+=1;continue
+                  if c=='{':depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          helper=r'''
+              boolean containsUiTextV3468(android.view.View v,String needle){
+                  if(v instanceof android.widget.TextView){
+                      CharSequence q=((android.widget.TextView)v).getText();
+                      String s=q==null?"":q.toString().replace('\n',' ').replaceAll("\\s+"," ").trim();
+                      if(s.contains(needle))return true;
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++){
+                          if(containsUiTextV3468(g.getChildAt(i),needle))return true;
+                      }
+                  }
+                  return false;
+              }
+          '''
+          last=main.rfind('}')
+          if last<0: raise RuntimeError('MainActivity closing brace not found')
+          main=main[:last]+helper+'\n'+main[last:]
+
+          sig='void padDashboardScrollableContentV3465(android.view.View v)'
+          p=main.find(sig)
+          if p<0: raise RuntimeError('padDashboardScrollableContentV3465 not found')
+          o=main.find('{',p); c=matching_brace(main,o)
+          replacement=r'''void padDashboardScrollableContentV3465(android.view.View v){
+                  boolean scroll=(v instanceof android.widget.ScrollView)||v.getClass().getName().contains("NestedScrollView");
+                  if(scroll){
+                      boolean positionsDashboard=containsDashboardActionV3465(v)&&containsUiTextV3468(v,"Principali posizioni");
+                      if(v instanceof android.view.ViewGroup){
+                          android.view.ViewGroup vg=(android.view.ViewGroup)v;
+                          vg.setClipToPadding(false);
+                          if(vg.getChildCount()>0){
+                              android.view.View child=vg.getChildAt(0);
+                              if(positionsDashboard){
+                                  int navHeight=bottomNav==null?0:bottomNav.getHeight();
+                                  int safeBottom=Math.max(dpV3465(84),navHeight+dpV3465(18));
+                                  child.setPadding(
+                                      child.getPaddingLeft(),child.getPaddingTop(),
+                                      child.getPaddingRight(),safeBottom
+                                  );
+                              }else if(child.getPaddingBottom()>=dpV3465(120)){
+                                  child.setPadding(
+                                      child.getPaddingLeft(),child.getPaddingTop(),
+                                      child.getPaddingRight(),dpV3465(16)
+                                  );
+                              }
+                          }
+                      }
+                      int viewportBottom=positionsDashboard?dpV3465(8):Math.min(v.getPaddingBottom(),dpV3465(8));
+                      v.setPadding(v.getPaddingLeft(),v.getPaddingTop(),v.getPaddingRight(),viewportBottom);
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++)padDashboardScrollableContentV3465(g.getChildAt(i));
+                  }
+              }'''
+          main=main[:p]+replacement+main[c+1:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+          assert db_path.read_bytes()==db_before
+          print('V3.4.68 bottom spacing refine applied; database untouched')
+          PY68
+
+      - name: Verify V3.4.68 spacing and data safety regression
+        shell: bash
+        run: |
+          python3 - <<'PY68CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+          compact=lambda text: re.sub(r'\s+','',text)
+
+          assert 'versionCode 110' in g
+          assert 'versionName "3.4.68-dev-bottom-spacing-refine"' in g
+          assert 'DEV 3.4.68' in s
+          assert re.search(r'DB_VERSION\s*=\s*17',d)
+          assert 'boolean containsUiTextV3468(android.view.View v,String needle)' in s
+          assert 'containsUiTextV3468(v,"Principali posizioni")' in s
+          assert 'Math.max(dpV3465(84),navHeight+dpV3465(18))' in s
+          assert 'child.getPaddingBottom()>=dpV3465(120)' in s
+          assert 'child.getPaddingRight(),dpV3465(16)' in s
+          assert 'positionsDashboard?dpV3465(8)' in s
+          assert 'Math.max(dpV3465(144),navHeight+dpV3465(32))' not in s
+
+          assert 'void applyBottomNavFinalV3466()' in s
+          assert 'void normalizeBottomNavRowsV3466(android.view.View v)' in s
+          assert 'setAutoSizeTextTypeWithDefaults(android.widget.TextView.AUTO_SIZE_TEXT_TYPE_NONE)' in s
+          assert 'COMPLEX_UNIT_PX' in s
+          assert 't.setTextScaleX(portfolios||movements?0.70f:0.90f);' in s
+          assert 'row.getChildCount()==5' in s
+          assert 'lp.width=0;' in s and 'lp.weight=1f;' in s
+          assert re.search(r'\.setText\(\s*"Portafogl"\s*\)',s) is None
+          assert re.search(r'\.setText\(\s*"Movimen"\s*\)',s) is None
+          assert 'b.setMaxLines(2);' in s
+          assert 'b.setMinHeight(dpV3465(58));' in s
+
+          assert 'positions_archive_before_delete_v3464' in s
+          assert 'positions_block_tr_placeholder14_v3464' in s
+          assert 'repairTradeRepublicPlaceholderPricesV3464' in s
+          assert re.search(r'cv\.put\(\s*"price"\s*,\s*baseline\s*\[\s*i\s*\]\s*\)\s*;',s)
+          assert re.search(r'current_value\s*=\s*quantity\s*\*\s*price',s)
+          assert 'UPDATEportfolio_statusSETcash=0,total_value=COALESCE(invested,0)' in compact(s)
+          assert 'applyHistoricalUiSafetyV3462' in s
+
+          m1=re.search(r'void\s+repairTradeRepublicPlaceholderPricesV3464\s*\(\s*\)\s*\{',s)
+          assert m1
+          m2=re.search(r'void\s+applyDashboardCashUiV3464\s*\(\s*\)\s*\{',s[m1.end():])
+          assert m2
+          repair=s[m1.start():m1.end()+m2.start()]
+          rc=compact(repair)
+          assert 'cv.put("quantity"' not in rc
+          assert 'cv.put("pmc"' not in rc
+
+          print('V3.4.68 spacing refine + V3.4.66 UI + V3.4.64 data safety regression OK')
+          PY68CHECK
+
+      - name: Patch V3.4.69 compact bottom spacing
+        shell: bash
+        run: |
+          python3 - <<'PY69'
+          from pathlib import Path
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+
+          assert 'versionCode 110' in gradle
+          assert 'versionName "3.4.68-dev-bottom-spacing-refine"' in gradle
+          assert 'DEV 3.4.68' in main
+          assert 'void padDashboardScrollableContentV3465(android.view.View v)' in main
+          assert 'containsDashboardActionV3465(v)' in main
+          assert 'positions_archive_before_delete_v3464' in main
+          assert 'positions_block_tr_placeholder14_v3464' in main
+
+          gradle=gradle.replace('versionCode 110','versionCode 111',1)
+          gradle=gradle.replace(
+              'versionName "3.4.68-dev-bottom-spacing-refine"',
+              'versionName "3.4.69-dev-compact-bottom-spacing"',
+              1
+          )
+          main=main.replace('DEV 3.4.68','DEV 3.4.69')
+
+          def matching_brace(text, open_pos):
+              depth=0;i=open_pos;in_str=in_char=in_line=in_block=False;esc=False
+              while i<len(text):
+                  c=text[i];n=text[i+1] if i+1<len(text) else ''
+                  if in_line:
+                      if c=='\n':in_line=False
+                      i+=1;continue
+                  if in_block:
+                      if c=='*' and n=='/':in_block=False;i+=2;continue
+                      i+=1;continue
+                  if in_str:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='"':in_str=False
+                      i+=1;continue
+                  if in_char:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":in_char=False
+                      i+=1;continue
+                  if c=='/' and n=='/':in_line=True;i+=2;continue
+                  if c=='/' and n=='*':in_block=True;i+=2;continue
+                  if c=='"':in_str=True;i+=1;continue
+                  if c=="'":in_char=True;i+=1;continue
+                  if c=='{':depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          sig='void padDashboardScrollableContentV3465(android.view.View v)'
+          p=main.find(sig)
+          if p<0: raise RuntimeError('padDashboardScrollableContentV3465 not found')
+          o=main.find('{',p); c=matching_brace(main,o)
+
+          replacement=r'''void padDashboardScrollableContentV3465(android.view.View v){
+                  boolean scroll=(v instanceof android.widget.ScrollView)||v.getClass().getName().contains("NestedScrollView");
+                  if(scroll&&containsDashboardActionV3465(v)){
+                      // V3.4.69: remove the synthetic end-of-page spacer introduced
+                      // by V3.4.67/68. Keep only a small content inset.
+                      if(v instanceof android.view.ViewGroup){
+                          android.view.ViewGroup vg=(android.view.ViewGroup)v;
+                          vg.setClipToPadding(false);
+                          if(vg.getChildCount()>0){
+                              android.view.View child=vg.getChildAt(0);
+                              int compactBottom=child.getPaddingBottom()>=dpV3465(64)
+                                  ?dpV3465(12):child.getPaddingBottom();
+                              child.setPadding(
+                                  child.getPaddingLeft(),child.getPaddingTop(),
+                                  child.getPaddingRight(),compactBottom
+                              );
+                          }
+                      }
+                      int viewportBottom=Math.min(v.getPaddingBottom(),dpV3465(4));
+                      v.setPadding(v.getPaddingLeft(),v.getPaddingTop(),v.getPaddingRight(),viewportBottom);
+
+                      // If the scroll viewport physically extends behind the fixed
+                      // bottom navigation, shrink the viewport itself instead of
+                      // adding empty scrollable padding. This keeps final content
+                      // reachable without showing a large blank tail.
+                      if(bottomNav!=null&&bottomNav.getHeight()>0){
+                          int[] sl=new int[2];
+                          int[] nl=new int[2];
+                          v.getLocationOnScreen(sl);
+                          bottomNav.getLocationOnScreen(nl);
+                          int overlap=(sl[1]+v.getHeight())-nl[1];
+                          android.view.ViewGroup.LayoutParams raw=v.getLayoutParams();
+                          if(overlap>0&&raw instanceof android.view.ViewGroup.MarginLayoutParams){
+                              android.view.ViewGroup.MarginLayoutParams mlp=
+                                  (android.view.ViewGroup.MarginLayoutParams)raw;
+                              int wanted=mlp.bottomMargin+overlap+dpV3465(4);
+                              if(wanted>mlp.bottomMargin){
+                                  mlp.bottomMargin=wanted;
+                                  v.setLayoutParams(mlp);
+                              }
+                          }
+                      }
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++)padDashboardScrollableContentV3465(g.getChildAt(i));
+                  }
+              }'''
+
+          main=main[:p]+replacement+main[c+1:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+          assert db_path.read_bytes()==db_before
+          print('V3.4.69 compact bottom spacing applied; Performance/data/database untouched')
+          PY69
+
+      - name: Verify V3.4.69 compact spacing and data safety regression
+        shell: bash
+        run: |
+          python3 - <<'PY69CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+          compact=lambda text: re.sub(r'\s+','',text)
+
+          assert 'versionCode 111' in g
+          assert 'versionName "3.4.69-dev-compact-bottom-spacing"' in g
+          assert 'DEV 3.4.69' in s
+          assert re.search(r'DB_VERSION\s*=\s*17',d)
+
+          assert 'scroll&&containsDashboardActionV3465(v)' in s
+          assert 'child.getPaddingBottom()>=dpV3465(64)' in s
+          assert '?dpV3465(12):child.getPaddingBottom()' in s
+          assert 'Math.min(v.getPaddingBottom(),dpV3465(4))' in s
+          assert 'v.getLocationOnScreen(sl);' in s
+          assert 'bottomNav.getLocationOnScreen(nl);' in s
+          assert 'int overlap=(sl[1]+v.getHeight())-nl[1];' in s
+          assert 'raw instanceof android.view.ViewGroup.MarginLayoutParams' in s
+          assert 'mlp.bottomMargin+overlap+dpV3465(4)' in s
+
+          p=s.index('void padDashboardScrollableContentV3465(android.view.View v)')
+          q=s.index('void runMobileUiPassV3465',p)
+          method=s[p:q]
+          assert 'navHeight+dpV3465(18)' not in method
+          assert 'Math.max(dpV3465(84)' not in method
+          assert 'Math.max(dpV3465(144)' not in method
+
+          assert 'void applyBottomNavFinalV3466()' in s
+          assert 'void normalizeBottomNavRowsV3466(android.view.View v)' in s
+          assert 't.setTextScaleX(portfolios||movements?0.70f:0.90f);' in s
+          assert 'row.getChildCount()==5' in s
+          assert 'lp.width=0;' in s and 'lp.weight=1f;' in s
+          assert re.search(r'\.setText\(\s*"Portafogl"\s*\)',s) is None
+          assert re.search(r'\.setText\(\s*"Movimen"\s*\)',s) is None
+          assert 'b.setMaxLines(2);' in s
+          assert 'b.setMinHeight(dpV3465(58));' in s
+
+          assert 'positions_archive_before_delete_v3464' in s
+          assert 'positions_block_tr_placeholder14_v3464' in s
+          assert 'repairTradeRepublicPlaceholderPricesV3464' in s
+          assert re.search(r'cv\.put\(\s*"price"\s*,\s*baseline\s*\[\s*i\s*\]\s*\)\s*;',s)
+          assert re.search(r'current_value\s*=\s*quantity\s*\*\s*price',s)
+          assert 'UPDATEportfolio_statusSETcash=0,total_value=COALESCE(invested,0)' in compact(s)
+          assert 'applyHistoricalUiSafetyV3462' in s
+
+          m1=re.search(r'void\s+repairTradeRepublicPlaceholderPricesV3464\s*\(\s*\)\s*\{',s)
+          assert m1
+          m2=re.search(r'void\s+applyDashboardCashUiV3464\s*\(\s*\)\s*\{',s[m1.end():])
+          assert m2
+          repair=s[m1.start():m1.end()+m2.start()]
+          rc=compact(repair)
+          assert 'cv.put("quantity"' not in rc
+          assert 'cv.put("pmc"' not in rc
+
+          print('V3.4.69 compact spacing + prior UI + V3.4.64 data safety regression OK')
+          PY69CHECK
+
+      - name: Patch V3.4.70 accounting rules, commission profiles and Italian UI
+        shell: bash
+        run: |
+          python3 - <<'PY70'
+          from pathlib import Path
+          import re
+          
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+          main=main_path.read_text(encoding='utf-8')
+          db=db_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+          
+          assert 'versionCode 111' in gradle
+          assert 'versionName "3.4.69-dev-compact-bottom-spacing"' in gradle
+          assert 'DEV 3.4.69' in main
+          assert re.search(r'DB_VERSION\s*=\s*17',db)
+          assert 'positions_archive_before_delete_v3464' in main
+          assert 'positions_block_tr_placeholder14_v3464' in main
+          
+          gradle=gradle.replace('versionCode 111','versionCode 112',1)
+          gradle=gradle.replace('versionName "3.4.69-dev-compact-bottom-spacing"','versionName "3.4.70-dev-accounting-rules-italian-ui"',1)
+          main=main.replace('DEV 3.4.69','DEV 3.4.70')
+          
+          def matching_brace(text, open_pos):
+              depth=0;i=open_pos;in_str=in_char=in_line=in_block=False;esc=False
+              while i<len(text):
+                  c=text[i];n=text[i+1] if i+1<len(text) else ''
+                  if in_line:
+                      if c=='\n': in_line=False
+                      i+=1; continue
+                  if in_block:
+                      if c=='*' and n=='/': in_block=False; i+=2; continue
+                      i+=1; continue
+                  if in_str:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=='"': in_str=False
+                      i+=1; continue
+                  if in_char:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=="'": in_char=False
+                      i+=1; continue
+                  if c=='/' and n=='/': in_line=True; i+=2; continue
+                  if c=='/' and n=='*': in_block=True; i+=2; continue
+                  if c=='"': in_str=True; i+=1; continue
+                  if c=="'": in_char=True; i+=1; continue
+                  if c=='{': depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0: return i
+                  i+=1
+              raise RuntimeError('unbalanced braces')
+          
+          def replace_method(text, regex, replacement, label):
+              m=re.search(regex,text,re.M)
+              if not m: raise RuntimeError(label+' definition not found')
+              o=text.find('{',m.start())
+              c=matching_brace(text,o)
+              return text[:m.start()]+replacement+text[c+1:]
+          
+          # The pre-existing profile engine is preserved as fallback, while V3.4.70
+          # adds an explicit one-time broker/portfolio commission profile supporting
+          # NONE / FIXED / PERCENT / MIXED and min/max caps.
+          db=replace_method(db,
+              r'^[ \t]*(?:public\s+|private\s+|protected\s+)?double\s+defaultCommission\s*\(',
+              r'''    double defaultCommission(String broker, boolean selling, double grossAmount){
+                  android.database.sqlite.SQLiteDatabase w=getWritableDatabase();
+                  w.execSQL("CREATE TABLE IF NOT EXISTS commission_profiles_v3470("+
+                      "broker TEXT PRIMARY KEY,configured INTEGER NOT NULL DEFAULT 0,"+
+                      "buy_mode TEXT NOT NULL DEFAULT 'NESSUNA',buy_fixed REAL NOT NULL DEFAULT 0,buy_pct REAL NOT NULL DEFAULT 0,"+
+                      "sell_mode TEXT NOT NULL DEFAULT 'NESSUNA',sell_fixed REAL NOT NULL DEFAULT 0,sell_pct REAL NOT NULL DEFAULT 0,"+
+                      "recall_mode TEXT NOT NULL DEFAULT 'NESSUNA',recall_fixed REAL NOT NULL DEFAULT 0,recall_pct REAL NOT NULL DEFAULT 0,"+
+                      "commission_min REAL NOT NULL DEFAULT 0,commission_max REAL NOT NULL DEFAULT 0,updated_at TEXT)");
+                  android.database.Cursor cp=w.rawQuery(
+                      "SELECT "+(selling?"sell_mode,sell_fixed,sell_pct":"buy_mode,buy_fixed,buy_pct")+
+                      ",commission_min,commission_max FROM commission_profiles_v3470 WHERE broker=? AND configured=1",
+                      new String[]{broker});
+                  try{
+                      if(cp.moveToFirst()){
+                          String mode=cp.getString(0)==null?"NESSUNA":cp.getString(0);
+                          double fixed=cp.getDouble(1),pct=cp.getDouble(2),min=cp.getDouble(3),max=cp.getDouble(4);
+                          double out=0;
+                          if("FISSA".equalsIgnoreCase(mode)) out=fixed;
+                          else if("PERCENTUALE".equalsIgnoreCase(mode)) out=Math.abs(grossAmount)*pct/100.0;
+                          else if("MISTA".equalsIgnoreCase(mode)) out=fixed+Math.abs(grossAmount)*pct/100.0;
+                          if(out>0&&min>0) out=Math.max(out,min);
+                          if(out>0&&max>0) out=Math.min(out,max);
+                          return Math.max(0,out);
+                      }
+                  }finally{cp.close();}
+                  android.database.Cursor c=w.rawQuery(
+                      "SELECT "+(selling?"sell_commission_type,sell_commission_value":"buy_commission_type,buy_commission_value")+
+                      ",commission_min,commission_max FROM portfolios WHERE name=? LIMIT 1",new String[]{broker});
+                  try{
+                      if(!c.moveToFirst())return 0;
+                      String type=c.getString(0); double value=c.getDouble(1),min=c.getDouble(2),max=c.getDouble(3);
+                      double out="PERCENTUALE".equalsIgnoreCase(type)?Math.abs(grossAmount)*value/100.0:value;
+                      if(out>0&&min>0)out=Math.max(out,min);
+                      if(out>0&&max>0)out=Math.min(out,max);
+                      return Math.max(0,out);
+                  }finally{c.close();}
+              }''', 'defaultCommission')
+          
+          # All displayed dates are Italian; storage remains ISO for reliable sorting.
+          main=replace_method(main,
+              r'^[ \t]*String\s+displayDate\s*\(\s*String\s+\w+\s*\)',
+              r'''    String displayDate(String value){
+                  if(value==null)return "";
+                  String n=normalizeDate(value);
+                  if(n!=null&&n.matches("\\d{4}-\\d{2}-\\d{2}")){
+                      return n.substring(8,10)+"/"+n.substring(5,7)+"/"+n.substring(0,4);
+                  }
+                  return value;
+              }''', 'displayDate')
+          
+          # Robust user-number parser: Italian or common decimal input.
+          # 67,02 and 67.02 both mean 67.02; 1.000,57 and 1,000.57 both mean 1000.57.
+          main=replace_method(main,
+              r'^[ \t]*Double\s+parseUserNumber\s*\(\s*String\s+\w+\s*\)\s*\{',
+              r'''    Double parseUserNumber(String raw){
+                  if(raw==null)return null;
+                  String s=raw.trim().replace("\u00A0","").replace(" ","").replace("€","").replace("%","");
+                  if(s.isEmpty())return null;
+                  boolean par=s.startsWith("(")&&s.endsWith(")"); if(par)s="-"+s.substring(1,s.length()-1);
+                  int comma=s.lastIndexOf(','),dot=s.lastIndexOf('.');
+                  try{
+                      if(comma>=0&&dot>=0){
+                          if(comma>dot){s=s.replace(".","").replace(',','.');}
+                          else{s=s.replace(",","");}
+                      }else if(comma>=0){
+                          int n=0;for(int i=0;i<s.length();i++)if(s.charAt(i)==',')n++;
+                          if(n==1)s=s.replace(',','.');
+                          else{int last=s.lastIndexOf(',');s=s.substring(0,last).replace(",","")+"."+s.substring(last+1);}
+                      }else if(dot>=0){
+                          int n=0;for(int i=0;i<s.length();i++)if(s.charAt(i)=='.')n++;
+                          if(n==1){
+                              int before=dot-(s.startsWith("-")?1:0),after=s.length()-dot-1;
+                              if(before>=1&&before<=3&&after==3)s=s.replace(".","");
+                              // otherwise one dot is the decimal separator (e.g. 67.02)
+                          }else{
+                              String unsigned=s.startsWith("-")?s.substring(1):s;String[] parts=unsigned.split("\\.",-1);boolean groups=true;
+                              for(int i=1;i<parts.length;i++)if(parts[i].length()!=3){groups=false;break;}
+                              if(groups)s=s.replace(".","");
+                              else{int last=s.lastIndexOf('.');String a=s.substring(0,last).replace(".","");s=a+s.substring(last);}
+                          }
+                      }
+                      return Double.valueOf(s);
+                  }catch(Exception e){return null;}
+              }''','parseUserNumber')
+          
+          # Performance costs: use income taxes + canonical cost_records. SELL rows are
+          # only a fallback when no mirrored cost row exists, preventing double counting.
+          main=replace_method(main,
+              r'^[ \t]*double\s+performanceCostsForPeriod\s*\(',
+              r'''    double performanceCostsForPeriod(String broker,int year,int month,String day){
+                  lastPerfCommissionV3470=0; lastPerfOperationTaxV3470=0; lastPerfIncomeTaxV3470=0;
+                  android.database.sqlite.SQLiteDatabase w=db.getReadableDatabase();
+                  boolean total=TOTAL.equals(broker);
+                  String bwhere=total?"broker IN (SELECT name FROM portfolios WHERE active=1)":"broker=?";
+                  String[] bargs=total?new String[]{}:new String[]{broker};
+                  android.database.Cursor ci=w.rawQuery("SELECT date,gross,net,tax_rate,amount_mode FROM income_records WHERE "+bwhere,bargs);
+                  try{
+                      while(ci.moveToNext()){
+                          String dt=ci.getString(0);
+                          if(!dateMatchesPerformancePeriod(dt,year,month,day))continue;
+                          String mode=ci.isNull(4)?"LORDO":ci.getString(4);
+                          double gross=ci.isNull(1)?0:ci.getDouble(1),net=ci.isNull(2)?gross:ci.getDouble(2),rate=ci.isNull(3)?0:ci.getDouble(3);
+                          if(!"NETTO".equalsIgnoreCase(mode)&&rate>0)lastPerfIncomeTaxV3470+=Math.max(0,gross-net);
+                      }
+                  }finally{ci.close();}
+                  android.database.Cursor cc=w.rawQuery("SELECT broker,date,cost_kind,amount,isin FROM cost_records WHERE "+bwhere+" AND upper(COALESCE(cost_kind,'')) IN ('COMMISSIONE','IMPOSTA')",bargs);
+                  try{
+                      while(cc.moveToNext()){
+                          String dt=cc.getString(1); if(!dateMatchesPerformancePeriod(dt,year,month,day))continue;
+                          double amount=Math.abs(cc.getDouble(3)); String kind=cc.getString(2)==null?"":cc.getString(2);
+                          if("COMMISSIONE".equalsIgnoreCase(kind))lastPerfCommissionV3470+=amount; else lastPerfOperationTaxV3470+=amount;
+                      }
+                  }finally{cc.close();}
+                  android.database.Cursor ct=w.rawQuery("SELECT broker,date,isin,commission,taxes FROM trade_records WHERE "+bwhere+" AND trade_type='SELL'",bargs);
+                  try{
+                      while(ct.moveToNext()){
+                          String br=ct.getString(0),dt=ct.getString(1),isin=ct.getString(2)==null?"":ct.getString(2);
+                          if(!dateMatchesPerformancePeriod(dt,year,month,day))continue;
+                          double commission=Math.abs(ct.getDouble(3)),taxes=Math.abs(ct.getDouble(4));
+                          if(commission>0&&!hasCanonicalCostV3470(br,dt,isin,"COMMISSIONE"))lastPerfCommissionV3470+=commission;
+                          if(taxes>0&&!hasCanonicalCostV3470(br,dt,isin,"IMPOSTA"))lastPerfOperationTaxV3470+=taxes;
+                      }
+                  }finally{ct.close();}
+                  return lastPerfCommissionV3470+lastPerfOperationTaxV3470+lastPerfIncomeTaxV3470;
+              }''', 'performanceCostsForPeriod')
+          
+          main=replace_method(main,
+              r'^[ \t]*void\s+addPerformanceCostsSummary\s*\(\s*double\s+\w+\s*,\s*double\s+\w+\s*\)\s*\{',
+              r'''    void addPerformanceCostsSummary(double gross,double costs){
+                  addPerformanceCostsSummary(gross,costs,false);
+              }''','addPerformanceCostsSummary2')
+          
+          main=replace_method(main,
+              r'^[ \t]*void\s+addPerformanceCostsSummary\s*\(\s*double\s+\w+\s*,\s*double\s+\w+\s*,\s*boolean\s+\w+\s*\)\s*\{',
+              r'''    void addPerformanceCostsSummary(double gross,double costs,boolean incomplete){
+                  android.widget.LinearLayout c=card();
+                  android.widget.TextView l=tv("Lordo  "+moneyItV3470(gross),18,true); l.setTextColor(gross>=0?C_GREEN:C_RED); c.addView(l);
+                  if(lastPerfCommissionV3470>0){android.widget.TextView t=tv("Commissioni  "+moneyItV3470(lastPerfCommissionV3470),17,true);t.setTextColor(C_RED);c.addView(t);}
+                  if(lastPerfIncomeTaxV3470>0){android.widget.TextView t=tv("Imposte proventi  "+moneyItV3470(lastPerfIncomeTaxV3470),17,true);t.setTextColor(C_RED);c.addView(t);}
+                  if(lastPerfOperationTaxV3470>0){android.widget.TextView t=tv("Imposte operazioni  "+moneyItV3470(lastPerfOperationTaxV3470),17,true);t.setTextColor(C_RED);c.addView(t);}
+                  double net=gross-costs;
+                  android.widget.TextView n=tv("Netto  "+moneyItV3470(net),18,true); n.setTextColor(net>=0?C_GREEN:C_RED); c.addView(n);
+                  if(costs>Math.max(1000.0,Math.abs(gross)*5.0))c.addView(muted("⚠ Costi/imposte molto elevati rispetto al lordo: verifica la registrazione e il separatore decimale.",13));
+                  if(incomplete)c.addView(muted("Netto noto: alcuni dati fiscali possono essere ancora incompleti.",13));
+                  content.addView(c);
+              }''','addPerformanceCostsSummary3')
+          
+          # Sale / certificate recall dialog. PMC remains price-only; buy fee, sell fee and taxes
+          # stay separate. Recall/scadenza uses its own commission profile (default zero).
+          main=replace_method(main,
+              r'^[ \t]*void\s+positionSaleDialog\s*\(',
+              r'''    void positionSaleDialog(final String broker,final String isin,final String instrument,final double available,final Double pmc,final double currentPrice,final double buyFeeRemaining){
+                  if(pmc==null||pmc<=0){toast("Inserisci prima il PMC della posizione");return;}
+                  if(!commissionProfileConfiguredV3470(broker)){
+                      showCommissionSetupV3470(broker,new Runnable(){@Override public void run(){positionSaleDialog(broker,isin,instrument,available,pmc,currentPrice,buyFeeRemaining);}});
+                      return;
+                  }
+                  final android.widget.LinearLayout box=new android.widget.LinearLayout(this); box.setOrientation(android.widget.LinearLayout.VERTICAL); box.setPadding(dp(18),dp(8),dp(18),dp(8));
+                  final android.widget.ScrollView sv=new android.widget.ScrollView(this); sv.addView(box);
+                  box.addView(tv(instrument,19,true));
+                  box.addView(muted("Disponibili: "+quantityItV3470(available)+" • PMC "+moneyItV3470(pmc)+" • Commissione acquisto residua "+moneyItV3470(buyFeeRemaining),14));
+                  final String[] ops={"Vendita","Richiamo / scadenza"};
+                  final android.widget.Spinner op=spinner(ops,0); addLabeledFieldV3470(box,"Tipo operazione",op);
+                  final android.widget.EditText date=textField("Data operazione (GG/MM/AAAA)",displayDate(currentDate())); addLabeledField(box,"Data operazione",date);
+                  final android.widget.EditText qty=textField("Quantità",quantityItV3470(available)); addLabeledField(box,"Quantità",qty);
+                  final android.widget.EditText price=textField("Prezzo per quota",decimalInputItV3470(currentPrice)); addLabeledField(box,"Prezzo / rimborso",price);
+                  final android.widget.CheckBox autoCommission=new android.widget.CheckBox(this);autoCommission.setText("Usa commissione del profilo (disattiva per modificare questa operazione)");autoCommission.setChecked(true);box.addView(autoCommission);
+                  final android.widget.EditText commission=textField("Commissione €","0,00"); commission.setEnabled(false); addLabeledField(box,"Commissione uscita",commission);
+                  final android.widget.CheckBox autoTax=new android.widget.CheckBox(this); autoTax.setText("Calcola imposta plusvalenza al 26% (disattiva per inserire l'imposta effettiva)"); autoTax.setChecked(true); box.addView(autoTax);
+                  final android.widget.EditText capTax=textField("Imposta plusvalenza €","0,00");capTax.setEnabled(false); addLabeledField(box,"Imposta plusvalenza",capTax);
+                  final android.widget.EditText tobin=textField("Tobin Tax €","0,00"); addLabeledField(box,"Tobin Tax",tobin);
+                  final android.widget.EditText other=textField("Altre imposte €","0,00"); addLabeledField(box,"Altre imposte",other);
+                  final android.widget.EditText notes=textField("Note",""); addLabeledField(box,"Note",notes);
+                  final android.widget.TextView preview=tv("",16,true); box.addView(preview);
+                  final Runnable recalc=new Runnable(){@Override public void run(){
+                      Double q=parseUserNumber(qty.getText().toString()),p=parseUserNumber(price.getText().toString());
+                      if(q==null||p==null||q<=0||q>available||p<0){preview.setText("Inserisci quantità e prezzo validi");preview.setTextColor(C_RED);return;}
+                      String operation=op.getSelectedItemPosition()==1?"RICHIAMO":"VENDITA";
+                      double gross=q*p;
+                      if(autoCommission.isChecked())commission.setText(decimalInputItV3470(commissionFromProfileV3470(broker,operation,gross)));
+                      double fee=fieldNumV3470(commission);
+                      double grossPl=q*(p-pmc);
+                      if(autoTax.isChecked())capTax.setText(decimalInputItV3470(Math.max(0,grossPl)*0.26));
+                      double tax=fieldNumV3470(capTax)+fieldNumV3470(tobin)+fieldNumV3470(other);
+                      double buyAlloc=available>0?buyFeeRemaining*(q/available):0;
+                      double net=grossPl-buyAlloc-fee-tax;
+                      preview.setText("P/L lordo: "+moneyItV3470(grossPl)+"\nCommissione acquisto attribuita: "+moneyItV3470(buyAlloc)+"\nCommissione uscita: "+moneyItV3470(fee)+"\nTotale imposte: "+moneyItV3470(tax)+"\nP/L netto: "+moneyItV3470(net));
+                      preview.setTextColor(net>=0?C_GREEN:C_RED);
+                  }};
+                  autoCommission.setOnCheckedChangeListener((b,checked)->{commission.setEnabled(!checked);recalc.run();});
+                  autoTax.setOnCheckedChangeListener((b,checked)->{capTax.setEnabled(!checked);recalc.run();});
+                  op.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener(){
+                      @Override public void onItemSelected(android.widget.AdapterView<?> p,android.view.View v,int pos,long id){recalc.run();}
+                      @Override public void onNothingSelected(android.widget.AdapterView<?> p){}
+                  });
+                  android.widget.Button calc=primaryBtn("Calcola risultato"); calc.setOnClickListener(v->recalc.run()); box.addView(calc); recalc.run();
+                  final android.app.AlertDialog dlg=new android.app.AlertDialog.Builder(this).setTitle("Vendita / richiamo").setView(sv).setNegativeButton("Annulla",null).setPositiveButton("REGISTRA",null).create();
+                  dlg.setOnShowListener(x->dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
+                      Double q=parseUserNumber(qty.getText().toString()),p=parseUserNumber(price.getText().toString());
+                      if(q==null||p==null||q<=0||q>available||p<0){toast("Quantità o prezzo non validi");return;}
+                      recalc.run();
+                      double comm=fieldNumV3470(commission),cg=fieldNumV3470(capTax),tt=fieldNumV3470(tobin),ot=fieldNumV3470(other);
+                      String normalized=normalizeDate(date.getText().toString());
+                      if(normalized==null||normalized.length()!=10){toast("Data non valida: usa GG/MM/AAAA");return;}
+                      boolean recall=op.getSelectedItemPosition()==1;
+                      String note=(recall?"RICHIAMO CERTIFICATO / SCADENZA":"VENDITA")+(notes.getText().toString().trim().isEmpty()?"":" — "+notes.getText().toString().trim());
+                      try{
+                          db.sellPosition(broker,isin,q,p,comm,cg,tt,ot,normalized,note);
+                          dlg.dismiss(); toast((recall?"Richiamo":"Vendita")+" registrato"); showPositionsList(broker);
+                      }catch(Exception ex){toast(ex.getMessage()==null?"Operazione non registrata":ex.getMessage());}
+                  }));
+                  dlg.show();
+              }''','positionSaleDialog')
+          
+          # Current-year annual-history accounting remains unchanged in V3.4.70;
+          # realized P/L is surfaced explicitly in Home to avoid double counting.
+          
+          helper_anchor=re.search(r'^[ \t]*void\s+showHome\s*\(',main,re.M)
+          if not helper_anchor: raise RuntimeError('showHome anchor missing')
+          helpers=r'''
+              // --- V3.4.70: accounting rules + Italian formatting ---
+              double lastPerfCommissionV3470=0,lastPerfOperationTaxV3470=0,lastPerfIncomeTaxV3470=0;
+              boolean commissionPromptOpenV3470=false;
+              final java.util.HashSet<String> commissionPromptedV3470=new java.util.HashSet<String>();
+          
+              void ensureCommissionProfileTableV3470(){
+                  db.getWritableDatabase().execSQL("CREATE TABLE IF NOT EXISTS commission_profiles_v3470("+
+                      "broker TEXT PRIMARY KEY,configured INTEGER NOT NULL DEFAULT 0,"+
+                      "buy_mode TEXT NOT NULL DEFAULT 'NESSUNA',buy_fixed REAL NOT NULL DEFAULT 0,buy_pct REAL NOT NULL DEFAULT 0,"+
+                      "sell_mode TEXT NOT NULL DEFAULT 'NESSUNA',sell_fixed REAL NOT NULL DEFAULT 0,sell_pct REAL NOT NULL DEFAULT 0,"+
+                      "recall_mode TEXT NOT NULL DEFAULT 'NESSUNA',recall_fixed REAL NOT NULL DEFAULT 0,recall_pct REAL NOT NULL DEFAULT 0,"+
+                      "commission_min REAL NOT NULL DEFAULT 0,commission_max REAL NOT NULL DEFAULT 0,updated_at TEXT)");
+              }
+              boolean commissionProfileConfiguredV3470(String broker){
+                  if(broker==null||TOTAL.equals(broker))return true; ensureCommissionProfileTableV3470();
+                  android.database.Cursor c=db.getReadableDatabase().rawQuery("SELECT configured FROM commission_profiles_v3470 WHERE broker=?",new String[]{broker});
+                  try{return c.moveToFirst()&&c.getInt(0)==1;}finally{c.close();}
+              }
+              double scalarV3470(String sql,String[] args){android.database.Cursor c=db.getReadableDatabase().rawQuery(sql,args);try{return c.moveToFirst()&&!c.isNull(0)?c.getDouble(0):0;}finally{c.close();}}
+              boolean hasCanonicalCostV3470(String broker,String date,String isin,String kind){
+                  android.database.Cursor c=db.getReadableDatabase().rawQuery("SELECT 1 FROM cost_records WHERE broker=? AND date=? AND upper(COALESCE(cost_kind,''))=? AND ((?<>'' AND upper(COALESCE(isin,''))=upper(?)) OR ?='') LIMIT 1",new String[]{broker,date,kind,isin,isin,isin});
+                  try{return c.moveToFirst();}finally{c.close();}
+              }
+              double standaloneCostsV3470(int year){
+                  android.database.Cursor c=db.getReadableDatabase().rawQuery("SELECT c.broker,c.date,c.isin,c.amount FROM cost_records c JOIN portfolios p ON p.name=c.broker WHERE p.active=1 AND substr(c.date,1,4)=? AND upper(COALESCE(c.cost_kind,'')) IN ('COMMISSIONE','IMPOSTA')",new String[]{String.valueOf(year)});
+                  double out=0; try{while(c.moveToNext()){String br=c.getString(0),dt=c.getString(1),isin=c.getString(2)==null?"":c.getString(2);android.database.Cursor t=db.getReadableDatabase().rawQuery("SELECT 1 FROM trade_records WHERE broker=? AND date=? AND trade_type='SELL' AND ((?<>'' AND upper(COALESCE(isin,''))=upper(?)) OR ?='') LIMIT 1",new String[]{br,dt,isin,isin,isin});boolean linked;try{linked=t.moveToFirst();}finally{t.close();}if(!linked)out+=Math.abs(c.getDouble(3));}}finally{c.close();}return out;
+              }
+              double commissionFromProfileV3470(String broker,String operation,double gross){
+                  ensureCommissionProfileTableV3470(); String prefix="RICHIAMO".equals(operation)?"recall_":"VENDITA".equals(operation)?"sell_":"buy_";
+                  android.database.Cursor c=db.getReadableDatabase().rawQuery("SELECT "+prefix+"mode,"+prefix+"fixed,"+prefix+"pct,commission_min,commission_max FROM commission_profiles_v3470 WHERE broker=? AND configured=1",new String[]{broker});
+                  try{if(!c.moveToFirst())return "VENDITA".equals(operation)?db.defaultCommission(broker,true,gross):"ACQUISTO".equals(operation)?db.defaultCommission(broker,false,gross):0;String mode=c.getString(0);double fixed=c.getDouble(1),pct=c.getDouble(2),min=c.getDouble(3),max=c.getDouble(4),out=0;if("FISSA".equals(mode))out=fixed;else if("PERCENTUALE".equals(mode))out=Math.abs(gross)*pct/100.0;else if("MISTA".equals(mode))out=fixed+Math.abs(gross)*pct/100.0;if(out>0&&min>0)out=Math.max(out,min);if(out>0&&max>0)out=Math.min(out,max);return Math.max(0,out);}finally{c.close();}
+              }
+              double fieldNumV3470(android.widget.EditText e){Double v=parseUserNumber(e.getText().toString());return v==null?0:Math.max(0,v);}
+              String moneyItV3470(double v){java.text.DecimalFormatSymbols s=new java.text.DecimalFormatSymbols(java.util.Locale.ITALY);java.text.DecimalFormat f=new java.text.DecimalFormat("#,##0.00",s);f.setGroupingUsed(true);return f.format(v)+" €";}
+              String decimalInputItV3470(double v){java.text.DecimalFormatSymbols s=new java.text.DecimalFormatSymbols(java.util.Locale.ITALY);java.text.DecimalFormat f=new java.text.DecimalFormat("0.00######",s);f.setGroupingUsed(false);return f.format(v);}
+              String quantityItV3470(double v){if(Math.abs(v-Math.rint(v))<0.000000001)return String.valueOf((long)Math.rint(v));java.text.DecimalFormatSymbols s=new java.text.DecimalFormatSymbols(java.util.Locale.ITALY);java.text.DecimalFormat f=new java.text.DecimalFormat("0.########",s);return f.format(v);}
+              void addLabeledFieldV3470(android.widget.LinearLayout box,String label,android.view.View v){box.addView(tv(label,14,true));box.addView(v);}
+              int modeIndexV3470(String m){if("FISSA".equalsIgnoreCase(m))return 1;if("PERCENTUALE".equalsIgnoreCase(m))return 2;if("MISTA".equalsIgnoreCase(m))return 3;return 0;}
+              String modeValueV3470(android.widget.Spinner s){int i=s.getSelectedItemPosition();return i==1?"FISSA":i==2?"PERCENTUALE":i==3?"MISTA":"NESSUNA";}
+              android.widget.Spinner modeSpinnerV3470(String mode){return spinner(new String[]{"Nessuna","Fissa (€)","Percentuale (%)","Mista (€ + %)"},modeIndexV3470(mode));}
+              void showCommissionSetupV3470(final String broker,final Runnable after){
+                  if(broker==null||TOTAL.equals(broker))return; ensureCommissionProfileTableV3470(); commissionPromptOpenV3470=true;
+                  String bm="NESSUNA",sm="NESSUNA",rm="NESSUNA";double bf=0,bp=0,sf=0,sp=0,rf=0,rp=0,min=0,max=0;
+                  android.database.Cursor c=db.getReadableDatabase().rawQuery("SELECT buy_mode,buy_fixed,buy_pct,sell_mode,sell_fixed,sell_pct,recall_mode,recall_fixed,recall_pct,commission_min,commission_max FROM commission_profiles_v3470 WHERE broker=?",new String[]{broker});
+                  try{if(c.moveToFirst()){bm=c.getString(0);bf=c.getDouble(1);bp=c.getDouble(2);sm=c.getString(3);sf=c.getDouble(4);sp=c.getDouble(5);rm=c.getString(6);rf=c.getDouble(7);rp=c.getDouble(8);min=c.getDouble(9);max=c.getDouble(10);}else{android.database.Cursor p=db.getReadableDatabase().rawQuery("SELECT buy_commission_type,buy_commission_value,sell_commission_type,sell_commission_value,commission_min,commission_max FROM portfolios WHERE name=?",new String[]{broker});try{if(p.moveToFirst()){String a=p.getString(0),z=p.getString(2);double av=p.getDouble(1),zv=p.getDouble(3);if(av>0){bm=a; if("PERCENTUALE".equalsIgnoreCase(a))bp=av;else bf=av;}if(zv>0){sm=z;if("PERCENTUALE".equalsIgnoreCase(z))sp=zv;else sf=zv;}min=p.getDouble(4);max=p.getDouble(5);}}finally{p.close();}}}finally{c.close();}
+                  final android.widget.LinearLayout box=new android.widget.LinearLayout(this);box.setOrientation(android.widget.LinearLayout.VERTICAL);box.setPadding(dp(18),dp(8),dp(18),dp(8));android.widget.ScrollView sv=new android.widget.ScrollView(this);sv.addView(box);
+                  box.addView(tv("Configurazione commissioni • "+broker,19,true));box.addView(muted("Impostala una volta: l'app la riutilizzerà automaticamente. Puoi modificarla in seguito. Il PMC resta separato dalle commissioni.",14));
+                  final android.widget.Spinner bmode=modeSpinnerV3470(bm),smode=modeSpinnerV3470(sm),rmode=modeSpinnerV3470(rm);
+                  final android.widget.EditText bfix=textField("€ fissi acquisto",decimalInputItV3470(bf)),bpct=textField("% acquisto",decimalInputItV3470(bp));
+                  final android.widget.EditText sfix=textField("€ fissi vendita",decimalInputItV3470(sf)),spct=textField("% vendita",decimalInputItV3470(sp));
+                  final android.widget.EditText rfix=textField("€ fissi richiamo",decimalInputItV3470(rf)),rpct=textField("% richiamo",decimalInputItV3470(rp));
+                  final android.widget.EditText emin=textField("Minimo €",decimalInputItV3470(min)),emax=textField("Massimo €",decimalInputItV3470(max));
+                  addLabeledFieldV3470(box,"Acquisto",bmode);addLabeledField(box,"Quota fissa acquisto",bfix);addLabeledField(box,"Percentuale acquisto",bpct);
+                  addLabeledFieldV3470(box,"Vendita",smode);addLabeledField(box,"Quota fissa vendita",sfix);addLabeledField(box,"Percentuale vendita",spct);
+                  addLabeledFieldV3470(box,"Richiamo / scadenza certificato",rmode);addLabeledField(box,"Quota fissa richiamo",rfix);addLabeledField(box,"Percentuale richiamo",rpct);
+                  addLabeledField(box,"Commissione minima",emin);addLabeledField(box,"Commissione massima",emax);
+                  final android.app.AlertDialog dlg=new android.app.AlertDialog.Builder(this).setTitle("Profilo commissionale").setView(sv).setNegativeButton("Annulla",(d,w)->commissionPromptOpenV3470=false).setPositiveButton("SALVA",null).create();
+                  dlg.setOnShowListener(x->dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
+                      android.content.ContentValues cv=new android.content.ContentValues();cv.put("broker",broker);cv.put("configured",1);cv.put("buy_mode",modeValueV3470(bmode));cv.put("buy_fixed",fieldNumV3470(bfix));cv.put("buy_pct",fieldNumV3470(bpct));cv.put("sell_mode",modeValueV3470(smode));cv.put("sell_fixed",fieldNumV3470(sfix));cv.put("sell_pct",fieldNumV3470(spct));cv.put("recall_mode",modeValueV3470(rmode));cv.put("recall_fixed",fieldNumV3470(rfix));cv.put("recall_pct",fieldNumV3470(rpct));cv.put("commission_min",fieldNumV3470(emin));cv.put("commission_max",fieldNumV3470(emax));cv.put("updated_at",currentDate());db.getWritableDatabase().insertWithOnConflict("commission_profiles_v3470",null,cv,android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE);
+                      android.content.ContentValues legacy=new android.content.ContentValues();String bmv=modeValueV3470(bmode),smv=modeValueV3470(smode);legacy.put("buy_commission_type","PERCENTUALE".equals(bmv)?"PERCENTUALE":"FISSA");legacy.put("buy_commission_value","PERCENTUALE".equals(bmv)?fieldNumV3470(bpct):fieldNumV3470(bfix));legacy.put("sell_commission_type","PERCENTUALE".equals(smv)?"PERCENTUALE":"FISSA");legacy.put("sell_commission_value","PERCENTUALE".equals(smv)?fieldNumV3470(spct):fieldNumV3470(sfix));legacy.put("commission_min",fieldNumV3470(emin));legacy.put("commission_max",fieldNumV3470(emax));db.getWritableDatabase().update("portfolios",legacy,"name=?",new String[]{broker});
+                      commissionPromptOpenV3470=false;dlg.dismiss();toast("Profilo commissionale salvato");if(after!=null)after.run();
+                  })); dlg.show();
+              }
+              void maybePromptCommissionProfileV3470(final String broker){
+                  if(broker==null||TOTAL.equals(broker)||commissionPromptOpenV3470||commissionProfileConfiguredV3470(broker)||commissionPromptedV3470.contains(broker))return;
+                  commissionPromptedV3470.add(broker);commissionPromptOpenV3470=true;new android.app.AlertDialog.Builder(this).setTitle("Configura commissioni").setMessage("Prima configurazione per "+broker+". Inserisci una sola volta costi fissi, percentuali, minimo/massimo e richiamo/scadenza; poi saranno proposti automaticamente.").setNegativeButton("Più tardi",(d,w)->commissionPromptOpenV3470=false).setPositiveButton("Configura ora",(d,w)->{commissionPromptOpenV3470=false;showCommissionSetupV3470(broker,null);}).show();
+              }
+              void addCommissionProfileCardV3470(String broker){
+                  if(content==null||broker==null||TOTAL.equals(broker))return;boolean ok=commissionProfileConfiguredV3470(broker);android.widget.LinearLayout c=card();c.addView(tv("Profilo commissionale",19,true));c.addView(muted(ok?"Configurato e memorizzato per questo portafoglio.":"Da configurare: verrà richiesto una sola volta e poi riutilizzato automaticamente.",14));android.widget.Button b=primaryBtn(ok?"Modifica profilo commissioni":"Configura commissioni");b.setOnClickListener(v->showCommissionSetupV3470(broker,null));c.addView(b);content.addView(c);
+              }
+              void addRealizedHomeCardV3470(){
+                  int y=dataYear();String ys=String.valueOf(y);double g=scalarV3470("SELECT COALESCE(SUM(t.realized_pl_gross),0) FROM trade_records t JOIN portfolios p ON p.name=t.broker WHERE p.active=1 AND t.trade_type='SELL' AND substr(t.date,1,4)=?",new String[]{ys});double n=scalarV3470("SELECT COALESCE(SUM(t.realized_pl_net),0) FROM trade_records t JOIN portfolios p ON p.name=t.broker WHERE p.active=1 AND t.trade_type='SELL' AND substr(t.date,1,4)=?",new String[]{ys});int count=(int)scalarV3470("SELECT COUNT(*) FROM trade_records t JOIN portfolios p ON p.name=t.broker WHERE p.active=1 AND t.trade_type='SELL' AND substr(t.date,1,4)=?",new String[]{ys});if(count<=0)return;android.widget.LinearLayout c=card();c.addView(tv("Operazioni chiuse YTD",19,true));c.addView(financeTextSigned("P/L realizzato lordo: ",g,17));c.addView(financeTextSigned("P/L realizzato netto: ",n,17));content.addView(c);
+              }
+              double parseVisibleNumberV3470(String x){try{String z=x.trim().replace(" ","").replace(" ","");if(z.contains(","))z=z.replace(".","").replace(',','.');else{int p=z.lastIndexOf('.');if(p>=0&&z.indexOf('.')==p&&z.length()-p-1==3)z=z.replace(".","");}return Double.parseDouble(z);}catch(Exception e){return Double.NaN;}}
+              String normalizeUiTextV3470(String src){
+                  if(src==null||src.isEmpty())return src;String out=src;
+                  java.util.regex.Matcher d=java.util.regex.Pattern.compile("\\b(\\d{4})-(\\d{2})-(\\d{2})\\b").matcher(out);StringBuffer ds=new StringBuffer();while(d.find())d.appendReplacement(ds,d.group(3)+"/"+d.group(2)+"/"+d.group(1));d.appendTail(ds);out=ds.toString();
+                  java.util.regex.Matcher m=java.util.regex.Pattern.compile("(PMC|Prezzo)(\\s+)(-?[0-9]+(?:\\.[0-9]+)?)(?:\\s*€)?").matcher(out);StringBuffer sb=new StringBuffer();while(m.find()){double v=parseVisibleNumberV3470(m.group(3));m.appendReplacement(sb,java.util.regex.Matcher.quoteReplacement(m.group(1)+m.group(2)+(Double.isNaN(v)?m.group(3):moneyItV3470(v))));}m.appendTail(sb);out=sb.toString();
+                  java.util.regex.Matcher e=java.util.regex.Pattern.compile("(-?[0-9][0-9\\.,]*)\\s*€").matcher(out);sb=new StringBuffer();while(e.find()){double v=parseVisibleNumberV3470(e.group(1));e.appendReplacement(sb,java.util.regex.Matcher.quoteReplacement(Double.isNaN(v)?e.group(0):moneyItV3470(v)));}e.appendTail(sb);out=sb.toString();
+                  java.util.regex.Matcher p=java.util.regex.Pattern.compile("(-?[0-9]+(?:\\.[0-9]+))%").matcher(out);sb=new StringBuffer();while(p.find()){p.appendReplacement(sb,p.group(1).replace('.',',')+"%");}p.appendTail(sb);return sb.toString();
+              }
+              boolean treeContainsV3470(android.view.View v,String needle){if(v instanceof android.widget.TextView){CharSequence q=((android.widget.TextView)v).getText();if(q!=null&&q.toString().contains(needle))return true;}if(v instanceof android.view.ViewGroup){android.view.ViewGroup g=(android.view.ViewGroup)v;for(int i=0;i<g.getChildCount();i++)if(treeContainsV3470(g.getChildAt(i),needle))return true;}return false;}
+              void applyItalianUiV3470(android.view.View root){
+                  if(root==null)return;boolean closed=treeContainsV3470(root," • Chiuse • "),open=treeContainsV3470(root," • Aperte • ");applyItalianUiTreeV3470(root,closed,open);
+              }
+              void applyItalianUiTreeV3470(android.view.View v,boolean closed,boolean open){
+                  if(v instanceof android.widget.TextView){android.widget.TextView t=(android.widget.TextView)v;if(!(t instanceof android.widget.EditText)){String old=t.getText()==null?"":t.getText().toString();String neu=normalizeUiTextV3470(old);if(!old.equals(neu))t.setText(neu);}else{android.widget.EditText e=(android.widget.EditText)t;String x=e.getText()==null?"":e.getText().toString();if(x.matches("\\d{4}-\\d{2}-\\d{2}"))e.setText(displayDate(x));CharSequence h=e.getHint();if(h!=null)e.setHint(h.toString().replace("YYYY-MM-DD","GG/MM/AAAA").replace("AAAA-MM-GG","GG/MM/AAAA"));}
+                      if(t instanceof android.widget.Button){String x=t.getText()==null?"":t.getText().toString();if("Chiuse".equals(x))setToggleStyle((android.widget.Button)t,closed);else if("Aperte".equals(x))setToggleStyle((android.widget.Button)t,open);}
+                  }
+                  if(v instanceof android.view.ViewGroup){android.view.ViewGroup g=(android.view.ViewGroup)v;for(int i=0;i<g.getChildCount();i++)applyItalianUiTreeV3470(g.getChildAt(i),closed,open);}
+              }
+              void scheduleItalianUiV3470(){if(content!=null)content.postDelayed(()->applyItalianUiV3470(content),80);}
+          '''
+          main=main[:helper_anchor.start()]+helpers+'\n'+main[helper_anchor.start():]
+          
+          def inject_before_close(text, method_regex, code, label):
+              m=re.search(method_regex,text,re.M)
+              if not m: raise RuntimeError(label+' missing')
+              o=text.find('{',m.start());c=matching_brace(text,o)
+              return text[:c]+'\n'+code+'\n'+text[c:]
+          
+          main=inject_before_close(main,r'^[ \t]*void\s+showHome\s*\(\s*\)', '        addRealizedHomeCardV3470();\n        scheduleItalianUiV3470();', 'showHome')
+          main=inject_before_close(main,r'^[ \t]*void\s+showDashboard\s*\(\s*\)', '        if(content!=null)content.postDelayed(()->maybePromptCommissionProfileV3470(current),250);\n        scheduleItalianUiV3470();', 'showDashboard')
+          main=inject_before_close(main,r'^[ \t]*void\s+showSettings\s*\(\s*\)', '        addCommissionProfileCardV3470(current);\n        scheduleItalianUiV3470();', 'showSettings')
+          
+          # Apply Italian formatting after all main screens/drill-downs.
+          # FIX1: use real regex escapes in the dynamic method matcher; the original raw string double-escaped \s and \( and raised re.PatternError.
+          for name in ['showIncome','showIncomeMonth','showOperations','showHistory','showHistoryMonth','showCosts','showPac','showPacTotal','showReturns','showMoreScreen','showStatementImportCenter','showPositionsList','showPositionDetail']:
+              rx=r'^[ \t]*void\s+'+re.escape(name)+r'\s*\('
+              try: main=inject_before_close(main,rx,'        scheduleItalianUiV3470();',name)
+              except RuntimeError: pass
+          main=inject_before_close(main,r'^[ \t]*void\s+showPositionsListFiltered\s*\(', '        scheduleItalianUiV3470();', 'showPositionsListFiltered')
+          
+          try:
+              main=inject_before_close(main,r'^[ \t]*void\s+setNavActive\s*\(', '        scheduleItalianUiV3470();', 'setNavActive')
+          except RuntimeError:
+              pass
+          
+          # Both Performance overloads eventually land in the 4-argument renderer; patch that one only.
+          main=inject_before_close(main,r'^[ \t]*void\s+showPerformance\s*\(\s*int\s+\w+\s*,\s*int\s+\w+\s*,\s*int\s+\w+\s*,\s*String\s+\w+\s*\)', '        scheduleItalianUiV3470();', 'showPerformance4')
+          
+          main_path.write_text(main,encoding='utf-8')
+          db_path.write_text(db,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+          print('V3.4.70 accounting/profile/Italian-UI patch applied')
+          PY70
+
+      - name: Verify V3.4.70 accounting and data safety regression
+        shell: bash
+        run: |
+          python3 - <<'PY70CHECK'
+          from pathlib import Path
+          import re
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+          compact=lambda x:re.sub(r'\s+','',x)
+          assert 'versionCode 112' in g
+          assert 'versionName "3.4.70-dev-accounting-rules-italian-ui"' in g
+          assert 'DEV 3.4.70' in s
+          assert re.search(r'DB_VERSION\s*=\s*17',d)
+          for marker in ['commission_profiles_v3470','commissionProfileConfiguredV3470','showCommissionSetupV3470','commissionFromProfileV3470','Richiamo / scadenza','RICHIAMO CERTIFICATO / SCADENZA','Calcola imposta plusvalenza al 26%','Totale imposte','moneyItV3470','scheduleItalianUiV3470','P/L realizzato lordo: ','P/L realizzato netto: ']: assert marker in s or marker in d,marker
+          assert 'MISTA' in d and 'PERCENTUALE' in d and 'commission_min' in d and 'commission_max' in d
+          assert 'lastPerfCommissionV3470' in s and 'lastPerfIncomeTaxV3470' in s and 'lastPerfOperationTaxV3470' in s
+          assert "upper(COALESCE(cost_kind,'')) IN ('COMMISSIONE','IMPOSTA')" in s
+          assert 'hasCanonicalCostV3470' in s
+          assert 'realized_pl_net' in s
+          assert 'GG/MM/AAAA' in s
+          assert 'setToggleStyle((android.widget.Button)t,closed)' in s
+          assert 'Usa commissione del profilo (disattiva per modificare questa operazione)' in s
+          assert 'commission.setEnabled(false)' in s and 'autoCommission.setOnCheckedChangeListener' in s
+          assert 'Double parseUserNumber(String raw)' in s
+          assert 'if(before>=1&&before<=3&&after==3)s=s.replace(".","")' in s
+          assert '⚠ Costi/imposte molto elevati rispetto al lordo' in s
+          assert 'commissionPromptedV3470' in s
+          assert 'syncCurrentAnnualHistoryV3456(){' in s  # retained existing annual logic, not removed
+          # Core safety protections from V3.4.64+ must remain intact.
+          assert 'positions_archive_before_delete_v3464' in s
+          assert 'positions_block_tr_placeholder14_v3464' in s
+          assert 'repairTradeRepublicPlaceholderPricesV3464' in s
+          assert re.search(r'cv\.put\(\s*"price"\s*,\s*baseline\s*\[\s*i\s*\]\s*\)',s)
+          assert re.search(r'current_value\s*=\s*quantity\s*\*\s*price',s)
+          assert 'UPDATEportfolio_statusSETcash=0,total_value=COALESCE(invested,0)' in compact(s)
+          assert 'applyHistoricalUiSafetyV3462' in s
+          m1=re.search(r'void\s+repairTradeRepublicPlaceholderPricesV3464\s*\(\s*\)\s*\{',s);assert m1
+          m2=re.search(r'void\s+applyDashboardCashUiV3464\s*\(\s*\)\s*\{',s[m1.end():]);assert m2
+          repair=s[m1.start():m1.end()+m2.start()];rc=compact(repair)
+          assert 'cv.put("quantity"' not in rc and 'cv.put("pmc"' not in rc
+          print('V3.4.70 regression OK: accounting + commission profiles + Italian UI + prior data safety')
+          PY70CHECK
+
+
+      - name: Patch V3.4.70 FIX2 plusvalenza tax safety and repair
+        shell: bash
+        run: |
+          python3 - <<'PY70FIX2'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+          main=main_path.read_text(encoding='utf-8')
+          db=db_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          if 'versionCode 112' not in gradle or 'versionName "3.4.70-dev-accounting-rules-italian-ui"' not in gradle:
+              raise RuntimeError('Unexpected V3.4.70 base version')
+          if 'DEV 3.4.70' not in main:
+              raise RuntimeError('Unexpected V3.4.70 UI base')
+
+          gradle=gradle.replace('versionCode 112','versionCode 113',1)
+          gradle=gradle.replace('versionName "3.4.70-dev-accounting-rules-italian-ui"','versionName "3.4.70-dev-accounting-rules-italian-ui-fix2"',1)
+          main=main.replace('DEV 3.4.70','DEV 3.4.70 FIX2')
+
+          old='final android.widget.EditText capTax=textField("Imposta plusvalenza €","0,00");capTax.setEnabled(false); addLabeledField(box,"Imposta plusvalenza",capTax);'
+          new='final android.widget.EditText capTax=textField("Imposta su plusvalenza €","0,00");capTax.setEnabled(false); addLabeledField(box,"Imposta su plusvalenza",capTax);'
+          if old not in main: raise RuntimeError('capital-gain tax field not found')
+          main=main.replace(old,new,1)
+
+          old='double comm=fieldNumV3470(commission),cg=fieldNumV3470(capTax),tt=fieldNumV3470(tobin),ot=fieldNumV3470(other);'
+          new=old+'\n            double grossPlCheck=q*(p-pmc);\n            if(cg>Math.max(0,grossPlCheck)+0.01){toast("Imposta su plusvalenza non valida: supera la plusvalenza lorda");return;}'
+          if old not in main: raise RuntimeError('sale registration anchor not found')
+          main=main.replace(old,new,1)
+
+          old='double gross=quantity*sellPrice,costBasis=quantity*pmc,ratio=quantity/qBefore,buyFeeAllocated=buyFee*ratio,taxes=Math.max(0,taxCapitalGain)+Math.max(0,tobinTax)+Math.max(0,otherTax),net=gross-Math.max(0,sellCommission)-taxes,plGross=gross-costBasis,plNet=plGross-buyFeeAllocated-Math.max(0,sellCommission)-taxes;'
+          new='double gross=quantity*sellPrice,costBasis=quantity*pmc,ratio=quantity/qBefore,buyFeeAllocated=buyFee*ratio,plGross=gross-costBasis; double safeCapitalGainTax=Math.max(0,taxCapitalGain); if(safeCapitalGainTax>Math.max(0,plGross)+0.01)throw new IllegalArgumentException("Imposta su plusvalenza non valida: supera la plusvalenza lorda"); double taxes=safeCapitalGainTax+Math.max(0,tobinTax)+Math.max(0,otherTax),net=gross-Math.max(0,sellCommission)-taxes,plNet=plGross-buyFeeAllocated-Math.max(0,sellCommission)-taxes;'
+          if old not in db: raise RuntimeError('DbHelper sale calculation anchor not found')
+          db=db.replace(old,new,1)
+          if '"IMPOSTA","Plusvalenza",taxCapitalGain' not in db: raise RuntimeError('capital-gain cost row anchor not found')
+          db=db.replace('"IMPOSTA","Plusvalenza",taxCapitalGain','"IMPOSTA","Imposta su plusvalenza",safeCapitalGainTax',1)
+
+          anchor='double lastPerfCommissionV3470=0,lastPerfOperationTaxV3470=0,lastPerfIncomeTaxV3470=0;'
+          if anchor not in main: raise RuntimeError('V3.4.70 helper anchor missing')
+          helper=r'''
+              boolean repairInvalidCapitalGainTaxesV3470Fix2(){
+                  android.database.sqlite.SQLiteDatabase w=db.getWritableDatabase();
+                  android.database.Cursor c=w.rawQuery(
+                      "SELECT c.id,t.id,c.amount,t.realized_pl_gross,t.buy_fee_allocated,t.commission,t.taxes,t.gross_amount " +
+                      "FROM cost_records c JOIN trade_records t ON t.broker=c.broker AND t.date=c.date AND t.trade_type='SELL' " +
+                      "AND upper(COALESCE(t.isin,''))=upper(COALESCE(c.isin,'')) " +
+                      "WHERE upper(COALESCE(c.cost_kind,''))='IMPOSTA' " +
+                      "AND upper(COALESCE(c.cost_type,'')) IN ('PLUSVALENZA','IMPOSTA PLUSVALENZA','IMPOSTA SU PLUSVALENZA') " +
+                      "AND (SELECT COUNT(*) FROM cost_records c2 WHERE c2.broker=c.broker AND c2.date=c.date " +
+                      "AND upper(COALESCE(c2.isin,''))=upper(COALESCE(c.isin,'')) AND upper(COALESCE(c2.cost_kind,''))='IMPOSTA' " +
+                      "AND upper(COALESCE(c2.cost_type,'')) IN ('PLUSVALENZA','IMPOSTA PLUSVALENZA','IMPOSTA SU PLUSVALENZA'))=1 " +
+                      "AND (SELECT COUNT(*) FROM trade_records t2 WHERE t2.broker=t.broker AND t2.date=t.date AND t2.trade_type='SELL' " +
+                      "AND upper(COALESCE(t2.isin,''))=upper(COALESCE(t.isin,'')))=1",null);
+                  boolean changed=false;
+                  try{
+                      while(c.moveToNext()){
+                          long costId=c.getLong(0),tradeId=c.getLong(1);
+                          double bad=Math.abs(c.getDouble(2)),plGross=c.getDouble(3),buyFee=Math.abs(c.getDouble(4)),commission=Math.abs(c.getDouble(5)),oldTaxes=Math.abs(c.getDouble(6)),gross=Math.abs(c.getDouble(7));
+                          double positiveGain=Math.max(0,plGross);
+                          if(bad<=positiveGain+0.01||oldTaxes+0.01<bad)continue;
+                          double corrected=positiveGain*0.26;
+                          double newTaxes=Math.max(0,oldTaxes-bad+corrected);
+                          double newPlNet=plGross-buyFee-commission-newTaxes;
+                          double newNet=Math.max(0,gross-commission-newTaxes);
+                          android.content.ContentValues cv=new android.content.ContentValues();
+                          cv.put("amount",corrected);cv.put("cost_type","Imposta su plusvalenza");cv.put("notes","Vendita posizione • FIX2 imposta plusvalenza riparata");
+                          w.update("cost_records",cv,"id=?",new String[]{String.valueOf(costId)});
+                          android.content.ContentValues tv=new android.content.ContentValues();
+                          tv.put("taxes",newTaxes);tv.put("realized_pl_net",newPlNet);tv.put("net_amount",newNet);
+                          w.update("trade_records",tv,"id=?",new String[]{String.valueOf(tradeId)});
+                          changed=true;
+                      }
+                  }finally{c.close();}
+                  return changed;
+              }
+          '''
+          main=main.replace(anchor,anchor+'\n'+helper,1)
+
+          def inject_after_open(text,method_regex,code,label):
+              m=re.search(method_regex,text,re.M)
+              if not m: raise RuntimeError(label+' missing')
+              o=text.find('{',m.start())
+              return text[:o+1]+'\n'+code+'\n'+text[o+1:]
+
+          for name in ['showHome','showHistory','showOperations']:
+              main=inject_after_open(main,r'^[ \t]*void\s+'+name+r'\s*\(', '        repairInvalidCapitalGainTaxesV3470Fix2();',name)
+
+          main_path.write_text(main,encoding='utf-8')
+          db_path.write_text(db,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+          print('V3.4.70 FIX2 plusvalenza tax safety + conservative repair applied')
+          PY70FIX2
+
+      - name: Verify V3.4.70 FIX2 plusvalenza repair and all safety regressions
+        shell: bash
+        run: |
+          python3 - <<'PY70FIX2CHECK'
+          from pathlib import Path
+          import re
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+          compact=lambda x:re.sub(r'\s+','',x)
+          assert 'versionCode 113' in g
+          assert 'versionName "3.4.70-dev-accounting-rules-italian-ui-fix2"' in g
+          assert 'DEV 3.4.70 FIX2' in s
+          assert 'Imposta su plusvalenza €' in s
+          assert 'Imposta su plusvalenza non valida: supera la plusvalenza lorda' in s
+          assert 'repairInvalidCapitalGainTaxesV3470Fix2' in s
+          assert 'positiveGain*0.26' in compact(s)
+          assert 'FIX2 imposta plusvalenza riparata' in s
+          assert '"IMPOSTA","Imposta su plusvalenza",safeCapitalGainTax' in d
+          assert 'safeCapitalGainTax>Math.max(0,plGross)+0.01' in compact(d)
+          pl=127.30; bad=3351.00; old_taxes=3351.00; buy_fee=0.0; commission=0.0
+          corrected=max(0,pl)*0.26
+          new_taxes=max(0,old_taxes-bad+corrected)
+          new_net=pl-buy_fee-commission-new_taxes
+          assert abs(corrected-33.098)<1e-9
+          assert abs(new_taxes-33.098)<1e-9
+          assert abs(new_net-94.202)<1e-9
+          for marker in ['commission_profiles_v3470','commissionProfileConfiguredV3470','showCommissionSetupV3470','commissionFromProfileV3470','Richiamo / scadenza','RICHIAMO CERTIFICATO / SCADENZA','moneyItV3470','scheduleItalianUiV3470','P/L realizzato lordo: ','P/L realizzato netto: ']: assert marker in s or marker in d,marker
+          assert 'lastPerfCommissionV3470' in s and 'lastPerfIncomeTaxV3470' in s and 'lastPerfOperationTaxV3470' in s
+          assert 'realized_pl_net' in s and 'GG/MM/AAAA' in s
+          assert 'positions_archive_before_delete_v3464' in s
+          assert 'positions_block_tr_placeholder14_v3464' in s
+          assert 'repairTradeRepublicPlaceholderPricesV3464' in s
+          assert re.search(r'cv\.put\(\s*"price"\s*,\s*baseline\s*\[\s*i\s*\]\s*\)',s)
+          assert re.search(r'current_value\s*=\s*quantity\s*\*\s*price',s)
+          assert 'UPDATEportfolio_statusSETcash=0,total_value=COALESCE(invested,0)' in compact(s)
+          assert 'applyHistoricalUiSafetyV3462' in s
+          m1=re.search(r'void\s+repairTradeRepublicPlaceholderPricesV3464\s*\(\s*\)\s*\{',s);assert m1
+          m2=re.search(r'void\s+applyDashboardCashUiV3464\s*\(\s*\)\s*\{',s[m1.end():]);assert m2
+          repair=s[m1.start():m1.end()+m2.start()];rc=compact(repair)
+          assert 'cv.put("quantity"' not in rc and 'cv.put("pmc"' not in rc
+          print('V3.4.70 FIX2 regression OK: reported 3351 tax anomaly repaired; V3.4.64 safety intact')
+          PY70FIX2CHECK
+
+
+      - name: Patch V3.4.70 FIX3 semantic operation colors
+        shell: bash
+        run: |
+          python3 - <<'PY70FIX3'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+          main=main_path.read_text(encoding='utf-8')
+          db=db_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          if 'versionCode 113' not in gradle or 'versionName \"3.4.70-dev-accounting-rules-italian-ui-fix2\"' not in gradle:
+              raise RuntimeError('Unexpected V3.4.70 FIX2 base version')
+          if 'DEV 3.4.70 FIX2' not in main:
+              raise RuntimeError('Unexpected V3.4.70 FIX2 UI base')
+
+          gradle=gradle.replace('versionCode 113','versionCode 114',1)
+          gradle=gradle.replace('versionName \"3.4.70-dev-accounting-rules-italian-ui-fix2\"','versionName \"3.4.70-dev-accounting-rules-italian-ui-fix3\"',1)
+          main=main.replace('DEV 3.4.70 FIX2','DEV 3.4.70 FIX3')
+
+          anchor='double lastPerfCommissionV3470=0,lastPerfOperationTaxV3470=0,lastPerfIncomeTaxV3470=0;'
+          if anchor not in main: raise RuntimeError('V3.4.70 helper anchor missing')
+          helpers=r'''
+              // --- V3.4.70 FIX3: semantic colors for operations ---
+              int semanticEndV3470Fix3(String s,int start){
+                  int end=s.length();
+                  int bullet=s.indexOf(" • ",start+1);
+                  int nl=s.indexOf('\n',start+1);
+                  if(bullet>=0&&bullet<end)end=bullet;
+                  if(nl>=0&&nl<end)end=nl;
+                  return end;
+              }
+              void semanticSpanV3470Fix3(android.text.SpannableString sp,int start,int end,int color){
+                  if(start<0||end<=start||end>sp.length())return;
+                  sp.setSpan(new android.text.style.ForegroundColorSpan(color),start,end,android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+              }
+              void styleOperationTextV3470Fix3(android.widget.TextView t){
+                  if(t==null||t instanceof android.widget.EditText)return;
+                  CharSequence q=t.getText();if(q==null)return;String s=q.toString();if(s.trim().isEmpty())return;
+                  String low=s.toLowerCase(java.util.Locale.ROOT);
+                  boolean closedOperation=low.contains("p/l netto")&&low.contains("commissioni")&&low.contains("imposte");
+                  boolean costRow=low.contains("commissione •")||low.contains("imposta •");
+                  boolean closedTitle="Operazioni chiuse / vendite".equals(s.trim());
+                  if(!closedOperation&&!costRow&&!closedTitle)return;
+                  android.text.SpannableString sp=new android.text.SpannableString(s);
+                  sp.setSpan(new android.text.style.ForegroundColorSpan(android.graphics.Color.WHITE),0,sp.length(),android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                  sp.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD),0,sp.length(),android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                  if(closedOperation){
+                      int pl=low.indexOf("p/l netto");
+                      if(pl>=0){
+                          int end=semanticEndV3470Fix3(s,pl);String seg=s.substring(pl,end);
+                          java.util.regex.Matcher m=java.util.regex.Pattern.compile("p/l\\s+netto\\s*([+\\-]?[0-9][0-9\\.,]*)\\s*€",java.util.regex.Pattern.CASE_INSENSITIVE).matcher(seg);
+                          double value=Double.NaN;if(m.find())value=parseVisibleNumberV3470(m.group(1));
+                          semanticSpanV3470Fix3(sp,pl,end,(!Double.isNaN(value)&&value<0)?C_RED:C_GREEN);
+                      }
+                      int commissioni=low.indexOf("commissioni");
+                      if(commissioni>=0)semanticSpanV3470Fix3(sp,commissioni,semanticEndV3470Fix3(s,commissioni),C_RED);
+                      int imposte=low.indexOf("imposte");
+                      if(imposte>=0)semanticSpanV3470Fix3(sp,imposte,semanticEndV3470Fix3(s,imposte),C_RED);
+                  }
+                  if(costRow){int p=low.indexOf("commissione •");if(p<0)p=low.indexOf("imposta •");if(p>=0)semanticSpanV3470Fix3(sp,p,sp.length(),C_RED);}
+                  t.setText(sp);t.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);
+              }
+              void applyOperationSemanticColorsV3470Fix3(android.view.View v){
+                  if(v==null)return;
+                  if(v instanceof android.widget.TextView)styleOperationTextV3470Fix3((android.widget.TextView)v);
+                  if(v instanceof android.view.ViewGroup){android.view.ViewGroup g=(android.view.ViewGroup)v;for(int i=0;i<g.getChildCount();i++)applyOperationSemanticColorsV3470Fix3(g.getChildAt(i));}
+              }
+              void scheduleOperationSemanticColorsV3470Fix3(){if(content!=null)content.postDelayed(()->applyOperationSemanticColorsV3470Fix3(content),160);}
+          '''
+          main=main.replace(anchor,anchor+'\n'+helpers,1)
+
+          def matching_brace(text,open_pos):
+              depth=0;i=open_pos;ins=inc=lin=blk=False;esc=False
+              while i<len(text):
+                  c=text[i];n=text[i+1] if i+1<len(text) else ''
+                  if lin:
+                      if c=='\n':lin=False
+                      i+=1;continue
+                  if blk:
+                      if c=='*' and n=='/':blk=False;i+=2;continue
+                      i+=1;continue
+                  if ins:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='\"':ins=False
+                      i+=1;continue
+                  if inc:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":inc=False
+                      i+=1;continue
+                  if c=='/' and n=='/':lin=True;i+=2;continue
+                  if c=='/' and n=='*':blk=True;i+=2;continue
+                  if c=='\"':ins=True;i+=1;continue
+                  if c=="'":inc=True;i+=1;continue
+                  if c=='{':depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          def inject_before_close(text,method_regex,code,label):
+              m=re.search(method_regex,text,re.M)
+              if not m: raise RuntimeError(label+' missing')
+              o=text.find('{',m.start());c=matching_brace(text,o)
+              return text[:c]+'\n'+code+'\n'+text[c:]
+
+          for name in ['showOperations','showHistory','showHistoryMonth']:
+              try: main=inject_before_close(main,r'^[ \\t]*void\\s+'+re.escape(name)+r'\\s*\\(','        scheduleOperationSemanticColorsV3470Fix3();',name)
+              except RuntimeError: pass
+
+          main_path.write_text(main,encoding='utf-8')
+          db_path.write_text(db,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+          print('V3.4.70 FIX3 semantic operation colors applied')
+          PY70FIX3
+
+      - name: Verify V3.4.70 FIX3 semantic colors and all safety regressions
+        shell: bash
+        run: |
+          python3 - <<'PY70FIX3CHECK'
+          from pathlib import Path
+          import re
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+          compact=lambda x:re.sub(r'\\s+','',x)
+          assert 'versionCode 114' in g
+          assert 'versionName \"3.4.70-dev-accounting-rules-italian-ui-fix3\"' in g
+          assert 'DEV 3.4.70 FIX3' in s
+          for marker in ['applyOperationSemanticColorsV3470Fix3','scheduleOperationSemanticColorsV3470Fix3','StyleSpan(android.graphics.Typeface.BOLD)','ForegroundColorSpan(android.graphics.Color.WHITE)','low.contains("p/l netto")','low.contains("commissioni")','low.contains("imposte")','semanticSpanV3470Fix3(sp,commissioni','semanticSpanV3470Fix3(sp,imposte','value<0)?C_RED:C_GREEN']:
+              assert marker in s,marker
+          assert 'Imposta su plusvalenza €' in s
+          assert 'Imposta su plusvalenza non valida: supera la plusvalenza lorda' in s
+          assert 'repairInvalidCapitalGainTaxesV3470Fix2' in s
+          assert 'FIX2 imposta plusvalenza riparata' in s
+          assert '"IMPOSTA","Imposta su plusvalenza",safeCapitalGainTax' in d
+          assert 'safeCapitalGainTax>Math.max(0,plGross)+0.01' in compact(d)
+          assert 'positions_archive_before_delete_v3464' in s
+          assert 'positions_block_tr_placeholder14_v3464' in s
+          assert 'repairTradeRepublicPlaceholderPricesV3464' in s
+          assert re.search(r'cv\\.put\\(\\s*\"price\"\\s*,\\s*baseline\\s*\\[\\s*i\\s*\\]\\s*\\)',s)
+          assert re.search(r'current_value\\s*=\\s*quantity\\s*\\*\\s*price',s)
+          assert 'UPDATEportfolio_statusSETcash=0,total_value=COALESCE(invested,0)' in compact(s)
+          assert 'applyHistoricalUiSafetyV3462' in s
+          m1=re.search(r'void\\s+repairTradeRepublicPlaceholderPricesV3464\\s*\\(\\s*\\)\\s*\\{',s);assert m1
+          m2=re.search(r'void\\s+applyDashboardCashUiV3464\\s*\\(\\s*\\)\\s*\\{',s[m1.end():]);assert m2
+          repair=s[m1.start():m1.end()+m2.start()];rc=compact(repair)
+          assert 'cv.put("quantity"' not in rc and 'cv.put("pmc"' not in rc
+          print('V3.4.70 FIX3 regression OK: semantic colors + FIX2 tax repair + V3.4.64 safety intact')
+          PY70FIX3CHECK
+
+
+      - name: Build signed V3.4.70 FIX3 DEV Accounting Rules & Italian UI APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.70 FIX3 DEV Accounting Rules & Italian UI APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.70 FIX3 DEV Accounting Rules & Italian UI signed APK verified"
+
+      - name: Upload signed V3.4.70 FIX3 DEV Accounting Rules & Italian UI APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3470-FIX3-DEV-SEMANTIC-COLORS-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
