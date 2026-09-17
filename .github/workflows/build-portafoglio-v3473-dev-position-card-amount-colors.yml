@@ -1,0 +1,305 @@
+name: Build Portafoglio 2026 V3.4.73 DEV Position Card Amount Colors
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3473-dev-position-card-amount-colors.yml"
+      - ".github/workflows/build-portafoglio-v3472-dev-position-functional-bar-dialog-ui-FIX4-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3472-dev-position-functional-bar-dialog-ui-FIX3.yml"
+      - ".github/workflows/build-portafoglio-v3472-dev-position-functional-bar-dialog-ui-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3472-dev-position-functional-bar-dialog-ui-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3472-dev-position-functional-bar-dialog-ui.yml"
+      - ".github/workflows/build-portafoglio-v3471-dev-instrument-lifecycle-acc-div.yml"
+      - ".github/workflows/build-portafoglio-v3470-dev-accounting-rules-italian-ui-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact V3.4.72 FIX4 FIX2 stable source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3472-dev-position-functional-bar-dialog-ui-FIX4-FIX2.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing stable baseline workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]; i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1; continue
+              name=line[len('      - name: '):].strip()
+              j=i+1; script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1; block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '): break
+                          if raw.startswith('          '):
+                              block.append(raw[10:]); k+=1; continue
+                          if raw.strip()=='':
+                              block.append(''); k+=1; continue
+                          if raw.startswith('        '): break
+                          block.append(raw); k+=1
+                      script='\n'.join(block)+'\n'; break
+                  j+=1
+              if script is not None: parsed.append((name,script))
+              i=j if j>i else i+1
+
+          start_name='Rebuild exact V3.4.72 FIX2 source chain'
+          end_name='Verify V3.4.72 FIX4 FIX2 filter behavior and all safety regressions'
+          started=False; reached=False; executed=0
+          for name,script in parsed:
+              if name==start_name: started=True
+              if not started: continue
+              print(f'\n===== Replaying stable baseline step: {name} =====')
+              subprocess.run(['bash','-euo','pipefail','-c',script],check=True,env=os.environ.copy())
+              executed+=1
+              if name==end_name:
+                  reached=True; break
+          if not started: raise RuntimeError(f'Could not find replay start: {start_name}')
+          if not reached: raise RuntimeError(f'Could not find replay end: {end_name}')
+          if executed<4: raise RuntimeError(f'Unexpectedly short stable replay: {executed}')
+          print(f'V3.4.72 FIX4 FIX2 stable source rebuilt successfully ({executed} steps)')
+          PYREPLAY
+
+      - name: Patch V3.4.73 position card amount-only semantic colors
+        shell: bash
+        run: |
+          python3 - <<'PY3473'
+          from pathlib import Path
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+          main=main_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          if 'versionCode 123' not in gradle: raise RuntimeError('Stable V3.4.72 FIX4 FIX2 versionCode missing')
+          if 'versionName "3.4.72-dev-position-functional-bar-dialog-ui-fix4-fix2"' not in gradle: raise RuntimeError('Stable versionName missing')
+          if 'DEV 3.4.72 FIX4 FIX2' not in main: raise RuntimeError('Stable DEV label missing')
+
+          gradle=gradle.replace('versionCode 123','versionCode 124',1)
+          gradle=gradle.replace('versionName "3.4.72-dev-position-functional-bar-dialog-ui-fix4-fix2"','versionName "3.4.73-dev-position-card-amount-colors"',1)
+          main=main.replace('DEV 3.4.72 FIX4 FIX2','DEV 3.4.73',1)
+
+          helper=r'''
+          // V3473_POSITION_CARD_AMOUNT_COLORS: labels/zeros remain white; only non-zero amounts are colored.
+          void stylePositionCardAmountTextV3473(android.widget.TextView t){
+              if(t==null||t instanceof android.widget.EditText)return;
+              CharSequence q=t.getText();if(q==null)return;String s=q.toString();if(s.trim().isEmpty())return;
+              String low=s.toLowerCase(java.util.Locale.ROOT);
+              boolean positionFinance=(low.contains("q.tà")||low.contains("q.ta"))&&low.contains("prezzo")&&
+                      (low.contains("p/l")||low.contains("proventi")||low.contains("costi")||low.contains("commissioni")||low.contains("imposte"));
+              if(!positionFinance)return;
+              android.text.SpannableString sp=new android.text.SpannableString(s);
+              sp.setSpan(new android.text.style.ForegroundColorSpan(android.graphics.Color.WHITE),0,sp.length(),android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+              sp.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD),0,sp.length(),android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+      
+              java.util.regex.Matcher pl=java.util.regex.Pattern.compile("p/l\\s*([+\\-]?[0-9][0-9\\.,]*)\\s*€",java.util.regex.Pattern.CASE_INSENSITIVE).matcher(s);
+              if(pl.find()){
+                  double value=parseVisibleNumberV3470(pl.group(1));
+                  if(!Double.isNaN(value)&&Math.abs(value)>0.000001)
+                      semanticSpanV3470Fix3(sp,pl.start(1),pl.end(),value<0?C_RED:C_GREEN);
+              }
+      
+              java.util.regex.Matcher inc=java.util.regex.Pattern.compile("proventi\\s*([+\\-]?[0-9][0-9\\.,]*)\\s*€",java.util.regex.Pattern.CASE_INSENSITIVE).matcher(s);
+              if(inc.find()){
+                  double value=parseVisibleNumberV3470(inc.group(1));
+                  if(!Double.isNaN(value)&&Math.abs(value)>0.000001)
+                      semanticSpanV3470Fix3(sp,inc.start(1),inc.end(),value<0?C_RED:C_GREEN);
+              }
+      
+              java.util.regex.Matcher cost=java.util.regex.Pattern.compile("(?:costi|commissioni|imposte)\\s*([+\\-]?[0-9][0-9\\.,]*)\\s*€",java.util.regex.Pattern.CASE_INSENSITIVE).matcher(s);
+              while(cost.find()){
+                  double value=parseVisibleNumberV3470(cost.group(1));
+                  if(!Double.isNaN(value)&&Math.abs(value)>0.000001)
+                      semanticSpanV3470Fix3(sp,cost.start(1),cost.end(),C_RED);
+              }
+              t.setText(sp);
+              t.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);
+          }
+          void applyPositionCardAmountColorsV3473(android.view.View v){
+              if(v==null)return;
+              if(v instanceof android.widget.TextView)stylePositionCardAmountTextV3473((android.widget.TextView)v);
+              if(v instanceof android.view.ViewGroup){
+                  android.view.ViewGroup g=(android.view.ViewGroup)v;
+                  for(int i=0;i<g.getChildCount();i++)applyPositionCardAmountColorsV3473(g.getChildAt(i));
+              }
+          }
+          void schedulePositionCardAmountColorsV3473(){
+              if(content==null)return;
+              content.postDelayed(()->applyPositionCardAmountColorsV3473(content),60);
+              content.postDelayed(()->applyPositionCardAmountColorsV3473(content),220);
+          }
+          '''
+          anchor='    void showPositionDetail(String broker,String isin){'
+          p=main.find(anchor)
+          if p<0: raise RuntimeError('showPositionDetail anchor missing')
+          if 'V3473_POSITION_CARD_AMOUNT_COLORS' in main: raise RuntimeError('V3.4.73 helper already present unexpectedly')
+          main=main[:p]+helper+'\n'+main[p:]
+
+          sync='applyPositionFunctionalBarV3472(); /* V3472_FIX4_FIX2_IMMEDIATE_VISUAL_SYNC */'
+          if sync not in main: raise RuntimeError('Stable immediate filter sync marker missing')
+          main=main.replace(sync,sync+'\n        schedulePositionCardAmountColorsV3473(); /* V3473_POSITION_CARD_COLOR_REFRESH */',1)
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+          if db_path.read_bytes()!=db_before: raise RuntimeError('DB changed unexpectedly')
+          print('V3.4.73 position card amount-only semantic colors applied')
+          PY3473
+
+      - name: Verify V3.4.73 position colors and all safety regressions
+        shell: bash
+        run: |
+          python3 - <<'PY3473CHECK'
+          from pathlib import Path
+          import re
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+          compact=lambda x:re.sub(r'\s+','',x)
+
+          assert 'versionCode 124' in g
+          assert 'versionName "3.4.73-dev-position-card-amount-colors"' in g
+          assert 'DEV 3.4.73' in s
+          assert re.search(r'DB_VERSION\s*=\s*18',d)
+
+          for marker in [
+              'V3473_POSITION_CARD_AMOUNT_COLORS',
+              'schedulePositionCardAmountColorsV3473(); /* V3473_POSITION_CARD_COLOR_REFRESH */',
+              'stylePositionCardAmountTextV3473',
+              'applyPositionCardAmountColorsV3473',
+              'proventi\\s*([+\\-]?[0-9][0-9\\.,]*)',
+              'p/l\\s*([+\\-]?[0-9][0-9\\.,]*)',
+              'value<0?C_RED:C_GREEN',
+              'Math.abs(value)>0.000001',
+              'semanticSpanV3470Fix3(sp,cost.start(1),cost.end(),C_RED)',
+          ]:
+              assert marker in s,marker
+
+          # Stable filter behavior must remain intact.
+          for marker in [
+              'final String[] category={initialCategory==null?"Tutti":initialCategory},state={"Aperte"},order={"Valore"}',
+              'if(!category.equals("Tutti")&&!cat.equals(category))continue;',
+              '(category.equals("Tutti")?"Tutti i titoli":category)+" • "+state+" • "+rows.size()+" risultati"',
+              'V3472_FIX4_FIX2_IMMEDIATE_VISUAL_SYNC',
+          ]:
+              assert marker in s,marker
+
+          # Existing accounting semantic-color rules must remain intact.
+          for marker in [
+              'applyOperationSemanticColorsV3470Fix3',
+              'semanticSpanV3470Fix3',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+              'FIX2 imposta plusvalenza riparata',
+          ]:
+              assert marker in s,marker
+
+          # Critical V3.4.64 data-integrity protections.
+          for marker in [
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'applyHistoricalUiSafetyV3462',
+          ]:
+              assert marker in s,marker
+          assert re.search(r'cv\.put\(\s*"price"\s*,\s*baseline\s*\[\s*i\s*\]\s*\)',s)
+          assert re.search(r'current_value\s*=\s*quantity\s*\*\s*price',s)
+          assert 'UPDATEportfolio_statusSETcash=0,total_value=COALESCE(invested,0)' in compact(s)
+
+          m=re.search(r'void\s+repairTradeRepublicPlaceholderPricesV3464\s*\(\s*\)\s*\{',s);assert m
+          nxt=re.search(r'void\s+applyDashboardCashUiV3464\s*\(\s*\)\s*\{',s[m.end():]);assert nxt
+          rc=compact(s[m.start():m.end()+nxt.start()])
+          assert 'cv.put("quantity"' not in rc
+          assert 'cv.put("pmc"' not in rc
+
+          print('V3.4.73 verified: non-zero position amounts colored, zeros/labels white, stable filters/accounting/data safety intact')
+          PY3473CHECK
+
+      - name: Build signed V3.4.73 DEV Position Card Amount Colors APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.73 DEV Position Card Amount Colors APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.73 DEV Position Card Amount Colors signed APK verified"
+
+      - name: Upload signed V3.4.73 DEV Position Card Amount Colors APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3473-DEV-POSITION-CARD-AMOUNT-COLORS-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
