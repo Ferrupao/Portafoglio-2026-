@@ -1,0 +1,331 @@
+name: Build Portafoglio 2026 V3.4.74 DEV Live Position Total Sync
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync.yml"
+      - ".github/workflows/build-portafoglio-v3473-dev-position-card-amount-colors-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3473-dev-position-card-amount-colors.yml"
+      - ".github/workflows/build-portafoglio-v3472-dev-position-functional-bar-dialog-ui-FIX4-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3471-dev-instrument-lifecycle-acc-div.yml"
+      - ".github/workflows/build-portafoglio-v3470-dev-accounting-rules-italian-ui-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact V3.4.73 FIX1 stable source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3473-dev-position-card-amount-colors-FIX1.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing stable baseline workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]; i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1; continue
+              name=line[len('      - name: '):].strip()
+              j=i+1; script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1; block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '): break
+                          if raw.startswith('          '):
+                              block.append(raw[10:]); k+=1; continue
+                          if raw.strip()=='':
+                              block.append(''); k+=1; continue
+                          if raw.startswith('        '): break
+                          block.append(raw); k+=1
+                      script='\n'.join(block)+'\n'; break
+                  j+=1
+              if script is not None: parsed.append((name,script))
+              i=j if j>i else i+1
+
+          start_name='Rebuild exact V3.4.72 FIX4 FIX2 stable source'
+          end_name='Verify V3.4.73 position colors and all safety regressions'
+          started=False; reached=False; executed=0
+          for name,script in parsed:
+              if name==start_name: started=True
+              if not started: continue
+              print(f'\n===== Replaying V3.4.73 FIX1 stable step: {name} =====')
+              subprocess.run(['bash','-euo','pipefail','-c',script],check=True,env=os.environ.copy())
+              executed+=1
+              if name==end_name:
+                  reached=True; break
+          if not started: raise RuntimeError(f'Could not find replay start: {start_name}')
+          if not reached: raise RuntimeError(f'Could not find replay end: {end_name}')
+          if executed<3: raise RuntimeError(f'Unexpectedly short stable replay: {executed}')
+          print(f'V3.4.73 FIX1 stable source rebuilt successfully ({executed} steps)')
+          PYREPLAY
+
+      - name: Patch V3.4.74 live position total synchronization
+        shell: bash
+        run: |
+          python3 - <<'PY3474'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+          main=main_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          if 'versionCode 124' not in gradle: raise RuntimeError('Stable V3.4.73 FIX1 versionCode missing')
+          if 'versionName "3.4.73-dev-position-card-amount-colors"' not in gradle: raise RuntimeError('Stable V3.4.73 versionName missing')
+          if 'V3473_POSITION_CARD_AMOUNT_COLORS' not in main: raise RuntimeError('Stable V3.4.73 color patch missing')
+
+          gradle=gradle.replace('versionCode 124','versionCode 125',1)
+          gradle=gradle.replace(
+              'versionName "3.4.73-dev-position-card-amount-colors"',
+              'versionName "3.4.74-dev-live-position-total-sync"',
+              1
+          )
+
+          # The visible Home DEV label remained stale in one render path. Normalize all known stale labels.
+          stale_labels=['DEV 3.4.70 FIX3','DEV 3.4.72 FIX4 FIX2','DEV 3.4.73']
+          replaced=0
+          for old in stale_labels:
+              count=main.count(old)
+              if count:
+                  main=main.replace(old,'DEV 3.4.74')
+                  replaced+=count
+          if replaced<1: raise RuntimeError('No DEV label was updated to V3.4.74')
+
+          def matching_brace(text, open_pos):
+              depth=0;i=open_pos;in_str=in_char=in_line=in_block=False;esc=False
+              while i<len(text):
+                  c=text[i];n=text[i+1] if i+1<len(text) else ''
+                  if in_line:
+                      if c=='\n':in_line=False
+                      i+=1;continue
+                  if in_block:
+                      if c=='*' and n=='/':in_block=False;i+=2;continue
+                      i+=1;continue
+                  if in_str:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='"':in_str=False
+                      i+=1;continue
+                  if in_char:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":in_char=False
+                      i+=1;continue
+                  if c=='/' and n=='/':in_line=True;i+=2;continue
+                  if c=='/' and n=='*':in_block=True;i+=2;continue
+                  if c=='"':in_str=True;i+=1;continue
+                  if c=="'":in_char=True;i+=1;continue
+                  if c=='{':depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          # Fix the real source of the stale Home total: before Home/Dashboard render,
+          # normalizeLiveCashAllPortfoliosV3464() already runs, but it only copied the
+          # old portfolio_status.invested value into total_value. Make invested itself
+          # authoritative from the open positions table first.
+          signature='void normalizeLiveCashAllPortfoliosV3464()'
+          p=main.find(signature)
+          if p<0: raise RuntimeError('normalizeLiveCashAllPortfoliosV3464 missing')
+          o=main.find('{',p); c=matching_brace(main,o)
+          old_method=main[p:c+1]
+          if 'UPDATE portfolio_status SET cash=0, total_value=COALESCE(invested,0)' not in old_method:
+              raise RuntimeError('Expected V3.4.64 cash normalization SQL missing')
+
+          new_method=r'''void normalizeLiveCashAllPortfoliosV3464(){
+                  android.database.sqlite.SQLiteDatabase w=db.getWritableDatabase();
+
+                  // V3.4.74: current portfolio value is authoritative from OPEN positions.
+                  // This repairs stale portfolio_status after manual insert/edit/sale/price updates.
+                  // Historical year-end values are untouched because only portfolio_status is updated.
+                  w.execSQL(
+                      "UPDATE portfolio_status SET invested=("+
+                      "SELECT COALESCE(SUM(COALESCE(p.current_value,0)),0) FROM positions p "+
+                      "WHERE lower(trim(COALESCE(p.broker,'')))=lower(trim(COALESCE(portfolio_status.broker,''))) "+
+                      "AND COALESCE(p.quantity,0)>0"+
+                      ")"
+                  );
+
+                  // Preserve the V3.4.64 GLOBAL rule: live cash is zero and total_value equals securities.
+                  w.execSQL(
+                      "UPDATE portfolio_status SET cash=0, total_value=COALESCE(invested,0) "+
+                      "WHERE cash IS NULL OR ABS(COALESCE(cash,0))>0.0001 "+
+                      "OR total_value IS NULL OR ABS(COALESCE(total_value,0)-COALESCE(invested,0))>0.0001"
+                  );
+              }'''
+          main=main[:p]+new_method+main[c+1:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+          if db_path.read_bytes()!=db_before: raise RuntimeError('DB changed unexpectedly')
+          print('V3.4.74 live position total synchronization applied')
+          PY3474
+
+      - name: Verify V3.4.74 live total sync and all safety regressions
+        shell: bash
+        run: |
+          python3 - <<'PY3474CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+          compact=lambda x:re.sub(r'\s+','',x)
+          sc=compact(s)
+
+          assert 'versionCode 125' in g
+          assert 'versionName "3.4.74-dev-live-position-total-sync"' in g
+          assert 'DEV 3.4.74' in s
+          assert 'DEV 3.4.70 FIX3' not in s
+          assert 'DEV 3.4.73' not in s
+          assert re.search(r'DB_VERSION\s*=\s*18',d)
+
+          # New total rule: portfolio_status.invested is rebuilt from every open position.
+          for marker in [
+              'V3.4.74: current portfolio value is authoritative from OPEN positions',
+              'SELECT COALESCE(SUM(COALESCE(p.current_value,0)),0) FROM positions p',
+              "lower(trim(COALESCE(p.broker,'')))=lower(trim(COALESCE(portfolio_status.broker,'')))",
+              'COALESCE(p.quantity,0)>0',
+              'UPDATE portfolio_status SET cash=0, total_value=COALESCE(invested,0)',
+          ]:
+              assert marker in s,marker
+
+          # The exact user regression: an added 9,830.00 position must increase 107,607.23.
+          old_total=107607.23
+          new_position=9830.00
+          assert round(old_total+new_position,2)==117437.23
+
+          # V3.4.73 colors + V3.4.72 filters must remain intact.
+          for marker in [
+              'V3473_POSITION_CARD_AMOUNT_COLORS',
+              'stylePositionCardAmountTextV3473',
+              'schedulePositionCardAmountColorsV3473',
+              'final String[] category={initialCategory==null?"Tutti":initialCategory},state={"Aperte"},order={"Valore"}',
+              'if(!category.equals("Tutti")&&!cat.equals(category))continue;',
+              'V3472_FIX4_FIX2_IMMEDIATE_VISUAL_SYNC',
+          ]:
+              assert marker in s,marker
+
+          # Accounting semantic colors/tax repair remain intact.
+          for marker in [
+              'applyOperationSemanticColorsV3470Fix3',
+              'semanticSpanV3470Fix3',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+              'FIX2 imposta plusvalenza riparata',
+          ]:
+              assert marker in s,marker
+
+          # Critical V3.4.64 data-integrity protections must remain present.
+          for marker in [
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'applyHistoricalUiSafetyV3462',
+          ]:
+              assert marker in s,marker
+          assert re.search(r'cv\.put\(\s*"price"\s*,\s*baseline\s*\[\s*i\s*\]\s*\)',s)
+          assert re.search(r'current_value\s*=\s*quantity\s*\*\s*price',s)
+          assert 'UPDATEportfolio_statusSETcash=0,total_value=COALESCE(invested,0)' in sc
+
+          m=re.search(r'void\s+repairTradeRepublicPlaceholderPricesV3464\s*\(\s*\)\s*\{',s);assert m
+          nxt=re.search(r'void\s+applyDashboardCashUiV3464\s*\(\s*\)\s*\{',s[m.end():]);assert nxt
+          rc=compact(s[m.start():m.end()+nxt.start()])
+          assert 'cv.put("quantity"' not in rc
+          assert 'cv.put("pmc"' not in rc
+
+          print('V3.4.74 verified: Home/Dashboard totals sync from open positions; labels, filters, colors, accounting and safety intact')
+          PY3474CHECK
+
+      - name: Build signed V3.4.74 DEV Live Position Total Sync APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.74 DEV Live Position Total Sync APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.74 DEV Live Position Total Sync signed APK verified"
+
+      - name: Upload signed V3.4.74 DEV Live Position Total Sync APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3474-DEV-LIVE-POSITION-TOTAL-SYNC-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
