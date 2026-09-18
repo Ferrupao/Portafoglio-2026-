@@ -1,0 +1,170 @@
+name: Diagnose Portafoglio 2026 V3.4.74 FIX3 Home Total Source
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/diagnose-v3474-fix3-home-total.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX3.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX2-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync.yml"
+      - ".github/workflows/build-portafoglio-v3473-dev-position-card-amount-colors-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3472-dev-position-functional-bar-dialog-ui-FIX4-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3471-dev-instrument-lifecycle-acc-div.yml"
+      - ".github/workflows/build-portafoglio-v3470-dev-accounting-rules-italian-ui-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml"
+      - "portafoglio-v3444-dev.zip"
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Rebuild exact V3.4.74 FIX3 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX3.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing FIX3 workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]; i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1; continue
+              name=line[len('      - name: '):].strip()
+              j=i+1; script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1; block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '): break
+                          if raw.startswith('          '):
+                              block.append(raw[10:]); k+=1; continue
+                          if raw.strip()=='':
+                              block.append(''); k+=1; continue
+                          if raw.startswith('        '): break
+                          block.append(raw); k+=1
+                      script='\n'.join(block)+'\n'; break
+                  j+=1
+              if script is not None: parsed.append((name,script))
+              i=j if j>i else i+1
+
+          start_name='Rebuild exact V3.4.74 FIX1 source'
+          end_name='Verify V3.4.74 FIX3 position-first totals and all regressions'
+          started=False; reached=False
+          for name,script in parsed:
+              if name==start_name: started=True
+              if not started: continue
+              print(f'===== REPLAY {name} =====')
+              subprocess.run(['bash','-euo','pipefail','-c',script],check=True,env=os.environ.copy())
+              if name==end_name:
+                  reached=True
+                  break
+
+          if not started or not reached:
+              raise RuntimeError('Could not reconstruct exact FIX3 source')
+          print('FIX3 source reconstructed successfully')
+          PYREPLAY
+
+      - name: Diagnose exact Home total source
+        shell: bash
+        run: |
+          python3 - <<'PYDIAG'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          s=main_path.read_text(encoding='utf-8')
+          d=db_path.read_text(encoding='utf-8')
+
+          def matching(text, open_pos):
+              depth=0;i=open_pos;ins=inc=lin=blk=False;esc=False
+              while i<len(text):
+                  c=text[i];n=text[i+1] if i+1<len(text) else ''
+                  if lin:
+                      if c=='\n': lin=False
+                      i+=1; continue
+                  if blk:
+                      if c=='*' and n=='/': blk=False; i+=2; continue
+                      i+=1; continue
+                  if ins:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=='"': ins=False
+                      i+=1; continue
+                  if inc:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=="'": inc=False
+                      i+=1; continue
+                  if c=='/' and n=='/': lin=True; i+=2; continue
+                  if c=='/' and n=='*': blk=True; i+=2; continue
+                  if c=='"': ins=True; i+=1; continue
+                  if c=="'": inc=True; i+=1; continue
+                  if c=='{': depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0: return i
+                  i+=1
+              raise RuntimeError('unbalanced braces')
+
+          def method(text, signature):
+              p=text.find(signature)
+              if p<0:
+                  return f'NOT FOUND: {signature}'
+              o=text.find('{',p)
+              c=matching(text,o)
+              return text[p:c+1]
+
+          print('\n===== EXACT showHome() =====')
+          print(method(s,'void showHome()'))
+
+          print('\n===== DB latestPortfolioValue =====')
+          print(method(d,'double latestPortfolioValue(String broker)'))
+
+          print('\n===== DB latestInvestedValue =====')
+          print(method(d,'Double latestInvestedValue(String broker)'))
+
+          print('\n===== DB latestPortfolioValueAllActive =====')
+          print(method(d,'double latestPortfolioValueAllActive()'))
+
+          print('\n===== ALL HOME LABEL OCCURRENCES =====')
+          terms=[
+              'Patrimonio totale','Valore titoli','Panoramica',
+              'latestPortfolioValue','latestInvestedValue',
+              'portfolio_status','final_capital'
+          ]
+          for term in terms:
+              print(f'\n--- TERM: {term} ---')
+              for m in re.finditer(re.escape(term),s):
+                  a=max(0,m.start()-900); b=min(len(s),m.end()+1400)
+                  print(s[a:b].replace('\r',''))
+              for m in re.finditer(re.escape(term),d):
+                  a=max(0,m.start()-900); b=min(len(d),m.end()+1400)
+                  print(d[a:b].replace('\r',''))
+
+          print('\n===== showHome numeric DB calls =====')
+          home=method(s,'void showHome()')
+          for line in home.splitlines():
+              if 'db.' in line or 'Patrimonio' in line or 'Valore titoli' in line or 'kpi' in line:
+                  print(line)
+
+          print('\nDIAGNOSTIC COMPLETE')
+          PYDIAG
