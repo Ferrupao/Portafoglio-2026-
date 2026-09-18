@@ -1,0 +1,283 @@
+name: Build Portafoglio 2026 V3.4.74 FIX2 Broker Normalized Totals
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync.yml"
+      - ".github/workflows/build-portafoglio-v3473-dev-position-card-amount-colors-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3472-dev-position-functional-bar-dialog-ui-FIX4-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3471-dev-instrument-lifecycle-acc-div.yml"
+      - ".github/workflows/build-portafoglio-v3470-dev-accounting-rules-italian-ui-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact V3.4.74 FIX1 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX1.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing V3.4.74 FIX1 workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]; i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1; continue
+              name=line[len('      - name: '):].strip()
+              j=i+1; script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1; block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '): break
+                          if raw.startswith('          '):
+                              block.append(raw[10:]); k+=1; continue
+                          if raw.strip()=='':
+                              block.append(''); k+=1; continue
+                          if raw.startswith('        '): break
+                          block.append(raw); k+=1
+                      script='\n'.join(block)+'\n'; break
+                  j+=1
+              if script is not None: parsed.append((name,script))
+              i=j if j>i else i+1
+
+          start_name='Rebuild exact V3.4.74 source'
+          end_name='Verify V3.4.74 FIX1 totals and all safety regressions'
+          started=False; reached=False; executed=0
+          for name,script in parsed:
+              if name==start_name: started=True
+              if not started: continue
+              print(f'\n===== Replaying V3.4.74 FIX1 step: {name} =====')
+              subprocess.run(['bash','-euo','pipefail','-c',script],check=True,env=os.environ.copy())
+              executed+=1
+              if name==end_name:
+                  reached=True; break
+
+          if not started: raise RuntimeError(f'Could not find replay start: {start_name}')
+          if not reached: raise RuntimeError(f'Could not find replay end: {end_name}')
+          if executed<3: raise RuntimeError(f'Unexpectedly short FIX1 replay: {executed}')
+          print(f'V3.4.74 FIX1 source rebuilt successfully ({executed} steps)')
+          PYREPLAY
+
+      - name: Patch V3.4.74 FIX2 normalized broker totals
+        shell: bash
+        run: |
+          python3 - <<'PY3474FIX2'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db=db_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          if 'versionCode 126' not in gradle:
+              raise RuntimeError('V3.4.74 FIX1 versionCode missing')
+          if 'versionName "3.4.74-dev-live-position-total-sync-fix1"' not in gradle:
+              raise RuntimeError('V3.4.74 FIX1 versionName missing')
+          if 'DEV 3.4.74 FIX1' not in main:
+              raise RuntimeError('V3.4.74 FIX1 visible label missing')
+
+          gradle=gradle.replace('versionCode 126','versionCode 127',1)
+          gradle=gradle.replace(
+              'versionName "3.4.74-dev-live-position-total-sync-fix1"',
+              'versionName "3.4.74-dev-live-position-total-sync-fix2"',
+              1
+          )
+          main=main.replace('DEV 3.4.74 FIX1','DEV 3.4.74 FIX2')
+
+          old_count='SELECT COUNT(*) FROM positions WHERE broker=?'
+          new_count="SELECT COUNT(*) FROM positions WHERE lower(trim(COALESCE(broker,'')))=lower(trim(?))"
+          old_sum='SELECT COALESCE(SUM(current_value),0) FROM positions WHERE broker=?'
+          new_sum="SELECT COALESCE(SUM(current_value),0) FROM positions WHERE lower(trim(COALESCE(broker,'')))=lower(trim(?))"
+
+          count_hits=db.count(old_count)
+          sum_hits=db.count(old_sum)
+          if count_hits != 1:
+              raise RuntimeError(f'Expected exactly one positionCount SQL, found {count_hits}')
+          if sum_hits < 2:
+              raise RuntimeError(f'Expected at least two position sum SQL occurrences, found {sum_hits}')
+
+          db=db.replace(old_count,new_count)
+          db=db.replace(old_sum,new_sum)
+
+          # Marker only; no data migration and no quantity/PMC mutation.
+          marker='// V3474_FIX2_NORMALIZED_BROKER_TOTALS'
+          anchor='public int positionCount('
+          p=db.find(anchor)
+          if p<0:
+              raise RuntimeError('positionCount method anchor missing')
+          line_start=db.rfind('\n',0,p)+1
+          db=db[:line_start]+'    '+marker+'\n'+db[line_start:]
+
+          main_path.write_text(main,encoding='utf-8')
+          db_path.write_text(db,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          print(f'V3.4.74 FIX2 applied: normalized positionCount and {sum_hits} position-value queries')
+          PY3474FIX2
+
+      - name: Verify V3.4.74 FIX2 normalized totals and regressions
+        shell: bash
+        run: |
+          python3 - <<'PY3474FIX2CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+          compact=lambda x:re.sub(r'\s+','',x)
+          sc=compact(s)
+
+          assert 'versionCode 127' in g
+          assert 'versionName "3.4.74-dev-live-position-total-sync-fix2"' in g
+          assert 'DEV 3.4.74 FIX2' in s
+          assert re.search(r'DB_VERSION\s*=\s*18',d)
+
+          normalized_count="SELECT COUNT(*) FROM positions WHERE lower(trim(COALESCE(broker,'')))=lower(trim(?))"
+          normalized_sum="SELECT COALESCE(SUM(current_value),0) FROM positions WHERE lower(trim(COALESCE(broker,'')))=lower(trim(?))"
+          assert normalized_count in d
+          assert d.count(normalized_sum) >= 2
+          assert 'SELECT COUNT(*) FROM positions WHERE broker=?' not in d
+          assert 'SELECT COALESCE(SUM(current_value),0) FROM positions WHERE broker=?' not in d
+          assert 'V3474_FIX2_NORMALIZED_BROKER_TOTALS' in d
+
+          # Home path must still use active portfolios -> latestPortfolioValue -> position count/sum.
+          for marker in [
+              'latestPortfolioValueAllActive',
+              'latestPortfolioValue',
+              'sumPositionsCurrentValue',
+              'portfolioNames',
+          ]:
+              assert marker in d or marker in s, marker
+
+          # FIX1 authoritative market value remains intact.
+          for marker in [
+              'V3.4.74 FIX1:',
+              'UPDATE positions SET current_value=COALESCE(quantity,0)*COALESCE(price,0)',
+              'SUM(COALESCE(p.quantity,0)*COALESCE(p.price,0))',
+              'Quantity and PMC are NEVER modified here',
+          ]:
+              assert marker in s,marker
+
+          # Existing UI/filter/color/accounting fixes remain intact.
+          for marker in [
+              'V3473_POSITION_CARD_AMOUNT_COLORS',
+              'stylePositionCardAmountTextV3473',
+              'schedulePositionCardAmountColorsV3473',
+              'V3472_FIX4_FIX2_IMMEDIATE_VISUAL_SYNC',
+              'applyOperationSemanticColorsV3470Fix3',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+          ]:
+              assert marker in s,marker
+
+          # Critical data safety remains intact.
+          for marker in [
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'applyHistoricalUiSafetyV3462',
+          ]:
+              assert marker in s,marker
+
+          assert re.search(r'cv\.put\(\s*"price"\s*,\s*baseline\s*\[\s*i\s*\]\s*\)',s)
+          assert 'UPDATEportfolio_statusSETcash=0,total_value=COALESCE(invested,0)' in sc
+
+          # No new mutation of quantity/PMC in FIX2.
+          assert 'V3474_FIX2_NORMALIZED_BROKER_TOTALS' in d
+          print('V3.4.74 FIX2 verified: broker comparison normalized for Home position count/sum; DB18 and all safety rules intact')
+          PY3474FIX2CHECK
+
+      - name: Build signed V3.4.74 FIX2 APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.74 FIX2 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.74 FIX2 signed APK verified"
+
+      - name: Upload signed V3.4.74 FIX2 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3474-FIX2-BROKER-NORMALIZED-TOTALS-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
