@@ -1,0 +1,317 @@
+name: Build Portafoglio 2026 V3.4.74 FIX4 Direct Open-Position Home Total
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX3.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX2-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync.yml"
+      - ".github/workflows/build-portafoglio-v3473-dev-position-card-amount-colors-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3472-dev-position-functional-bar-dialog-ui-FIX4-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3471-dev-instrument-lifecycle-acc-div.yml"
+      - ".github/workflows/build-portafoglio-v3470-dev-accounting-rules-italian-ui-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact V3.4.74 FIX3 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX3.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing FIX3 workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]; i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1; continue
+              name=line[len('      - name: '):].strip()
+              j=i+1; script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1; block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '): break
+                          if raw.startswith('          '):
+                              block.append(raw[10:]); k+=1; continue
+                          if raw.strip()=='':
+                              block.append(''); k+=1; continue
+                          if raw.startswith('        '): break
+                          block.append(raw); k+=1
+                      script='\n'.join(block)+'\n'; break
+                  j+=1
+              if script is not None: parsed.append((name,script))
+              i=j if j>i else i+1
+
+          start_name='Rebuild exact V3.4.74 FIX1 source'
+          end_name='Verify V3.4.74 FIX3 position-first totals and all regressions'
+          started=False; reached=False
+          for name,script in parsed:
+              if name==start_name: started=True
+              if not started: continue
+              print(f'===== REPLAY {name} =====')
+              subprocess.run(['bash','-euo','pipefail','-c',script],check=True,env=os.environ.copy())
+              if name==end_name:
+                  reached=True; break
+
+          if not started or not reached:
+              raise RuntimeError('Could not reconstruct exact FIX3 source')
+          print('FIX3 source reconstructed successfully')
+          PYREPLAY
+
+      - name: Patch V3.4.74 FIX4 direct open-position Home total
+        shell: bash
+        run: |
+          python3 - <<'PY3474FIX4'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db=db_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          if 'versionCode 128' not in gradle:
+              raise RuntimeError('FIX3 versionCode missing')
+          if 'versionName "3.4.74-dev-live-position-total-sync-fix3"' not in gradle:
+              raise RuntimeError('FIX3 versionName missing')
+          if 'DEV 3.4.74 FIX3' not in main:
+              raise RuntimeError('FIX3 visible label missing')
+
+          gradle=gradle.replace('versionCode 128','versionCode 129',1)
+          gradle=gradle.replace(
+              'versionName "3.4.74-dev-live-position-total-sync-fix3"',
+              'versionName "3.4.74-dev-live-position-total-sync-fix4"',
+              1
+          )
+          main=main.replace('DEV 3.4.74 FIX3','DEV 3.4.74 FIX4')
+
+          helper=r'''
+              // V3474_FIX4_DIRECT_OPEN_POSITION_HOME_TOTAL
+              public double homeOpenPositionsTotalV3474Fix4(){
+                  String sql=
+                      "SELECT COALESCE(SUM(COALESCE(x.quantity,0)*COALESCE(x.price,0)),0) "+
+                      "FROM positions x "+
+                      "WHERE COALESCE(x.quantity,0)>0 AND ("+
+                      "EXISTS(SELECT 1 FROM portfolios p WHERE p.active=1 "+
+                      "AND lower(trim(COALESCE(p.name,'')))=lower(trim(COALESCE(x.broker,'')))) "+
+                      "OR NOT EXISTS(SELECT 1 FROM portfolios p2 WHERE "+
+                      "lower(trim(COALESCE(p2.name,'')))=lower(trim(COALESCE(x.broker,''))))"+
+                      ")";
+                  Cursor c=getReadableDatabase().rawQuery(sql,null);
+                  double v=0;
+                  if(c.moveToFirst()&&!c.isNull(0))v=c.getDouble(0);
+                  c.close();
+                  return v;
+              }
+
+              public int homeOpenPositionsCountV3474Fix4(){
+                  String sql=
+                      "SELECT COUNT(*) FROM positions x "+
+                      "WHERE COALESCE(x.quantity,0)>0 AND ("+
+                      "EXISTS(SELECT 1 FROM portfolios p WHERE p.active=1 "+
+                      "AND lower(trim(COALESCE(p.name,'')))=lower(trim(COALESCE(x.broker,'')))) "+
+                      "OR NOT EXISTS(SELECT 1 FROM portfolios p2 WHERE "+
+                      "lower(trim(COALESCE(p2.name,'')))=lower(trim(COALESCE(x.broker,''))))"+
+                      ")";
+                  Cursor c=getReadableDatabase().rawQuery(sql,null);
+                  int n=0;
+                  if(c.moveToFirst())n=c.getInt(0);
+                  c.close();
+                  return n;
+              }
+          '''
+          last=db.rfind('}')
+          if last<0: raise RuntimeError('DbHelper closing brace missing')
+          db=db[:last]+'\n'+helper+'\n'+db[last:]
+
+          old_line='double gross=db.sumIncomeActive("gross"),totalValue=db.latestPortfolioValueAllActive();'
+          new_line='double gross=db.sumIncomeActive("gross"),totalValue=db.homeOpenPositionsTotalV3474Fix4();'
+          if old_line not in main:
+              raise RuntimeError('showHome totalValue line missing')
+          main=main.replace(old_line,new_line,1)
+
+          old_titles='Double titlesValue=unseparatedCount==0?db.latestInvestedValueAllActive():db.knownInvestedValueAllActive();'
+          new_titles='Double titlesValue=Double.valueOf(db.homeOpenPositionsTotalV3474Fix4());'
+          if old_titles not in main:
+              raise RuntimeError('showHome titlesValue line missing')
+          main=main.replace(old_titles,new_titles,1)
+
+          old_cash='Double cash=unseparatedCount==0?db.latestCashValueAllActive():db.knownCashValueAllActive();'
+          new_cash='Double cash=Double.valueOf(0.0);'
+          if old_cash not in main:
+              raise RuntimeError('showHome cash line missing')
+          main=main.replace(old_cash,new_cash,1)
+
+          old_all='public double latestPortfolioValueAllActive(){double x=0;for(String b:portfolioNames(true))x+=latestPortfolioValue(b);return x;}'
+          new_all='public double latestPortfolioValueAllActive(){return homeOpenPositionsTotalV3474Fix4();}'
+          if old_all not in db:
+              raise RuntimeError('latestPortfolioValueAllActive implementation missing')
+          db=db.replace(old_all,new_all,1)
+
+          old_inv='public Double latestInvestedValueAllActive(){double x=0;boolean any=false;for(String b:portfolioNames(true)){Double v=latestInvestedValue(b);if(v!=null){x+=v;any=true;}}return any?x:null;}'
+          new_inv='public Double latestInvestedValueAllActive(){return homeOpenPositionsCountV3474Fix4()>0?Double.valueOf(homeOpenPositionsTotalV3474Fix4()):null;}'
+          if old_inv not in db:
+              raise RuntimeError('latestInvestedValueAllActive implementation missing')
+          db=db.replace(old_inv,new_inv,1)
+
+          main_path.write_text(main,encoding='utf-8')
+          db_path.write_text(db,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          print('FIX4 applied: Home now reads current open positions directly')
+          PY3474FIX4
+
+      - name: Verify V3.4.74 FIX4 direct Home total and regressions
+        shell: bash
+        run: |
+          python3 - <<'PY3474FIX4CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+          compact=lambda x:re.sub(r'\s+','',x)
+          sc=compact(s); dc=compact(d)
+
+          assert 'versionCode 129' in g
+          assert 'versionName "3.4.74-dev-live-position-total-sync-fix4"' in g
+          assert 'DEV 3.4.74 FIX4' in s
+          assert re.search(r'DB_VERSION\s*=\s*18',d)
+
+          assert 'V3474_FIX4_DIRECT_OPEN_POSITION_HOME_TOTAL' in d
+          assert 'homeOpenPositionsTotalV3474Fix4' in d
+          assert 'homeOpenPositionsCountV3474Fix4' in d
+          assert 'SUM(COALESCE(x.quantity,0)*COALESCE(x.price,0))' in d
+          assert 'EXISTS(SELECT 1 FROM portfolios p WHERE p.active=1' in d
+          assert 'OR NOT EXISTS(SELECT 1 FROM portfolios p2 WHERE' in d
+
+          assert 'doublegross=db.sumIncomeActive("gross"),totalValue=db.homeOpenPositionsTotalV3474Fix4();' in sc
+          assert 'DoubletitlesValue=Double.valueOf(db.homeOpenPositionsTotalV3474Fix4());' in sc
+          assert 'Doublecash=Double.valueOf(0.0);' in sc
+          assert 'publicdoublelatestPortfolioValueAllActive(){returnhomeOpenPositionsTotalV3474Fix4();}' in dc
+
+          for marker in [
+              'V3.4.74 FIX1:',
+              'UPDATE positions SET current_value=COALESCE(quantity,0)*COALESCE(price,0)',
+              'V3474_FIX2_NORMALIZED_BROKER_TOTALS',
+              'V3474_FIX3_POSITION_FIRST_HOME_TOTAL',
+              'V3474_FIX3_POSITION_FIRST_INVESTED',
+          ]:
+              assert marker in s or marker in d, marker
+
+          assert round(10.0*983.0,2)==9830.00
+
+          for marker in [
+              'V3473_POSITION_CARD_AMOUNT_COLORS',
+              'V3472_FIX4_FIX2_IMMEDIATE_VISUAL_SYNC',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'applyHistoricalUiSafetyV3462',
+          ]:
+              assert marker in s,marker
+
+          rp=re.search(r'void\s+repairTradeRepublicPlaceholderPricesV3464\s*\(\s*\)\s*\{',s);assert rp
+          nxt=re.search(r'void\s+applyDashboardCashUiV3464\s*\(\s*\)\s*\{',s[rp.end():]);assert nxt
+          repair=compact(s[rp.start():rp.end()+nxt.start()])
+          assert 'cv.put("quantity"' not in repair
+          assert 'cv.put("pmc"' not in repair
+
+          print('FIX4 verified: Home total is direct open-position sum; inactive matched portfolios excluded; orphan visible positions included')
+          PY3474FIX4CHECK
+
+      - name: Build signed V3.4.74 FIX4 APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.74 FIX4 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.74 FIX4 signed APK verified"
+
+      - name: Upload signed V3.4.74 FIX4 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3474-FIX4-DIRECT-OPEN-POSITION-HOME-TOTAL-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
