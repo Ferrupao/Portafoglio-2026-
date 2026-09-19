@@ -1,0 +1,293 @@
+name: Build Portafoglio 2026 V3.4.77 FIX1 Correct FEGI ISIN
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3477-dev-trade-republic-price-fix-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3477-dev-trade-republic-price-fix.yml"
+      - ".github/workflows/build-portafoglio-v3476-dev-trade-republic-recovery-diagnostics.yml"
+      - ".github/workflows/build-portafoglio-v3475-dev-trade-republic-diagnostics.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-home-wealth-diagnostics-FIX5.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX3.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX2-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync.yml"
+      - ".github/workflows/build-portafoglio-v3473-dev-position-card-amount-colors-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3472-dev-position-functional-bar-dialog-ui-FIX4-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3471-dev-instrument-lifecycle-acc-div.yml"
+      - ".github/workflows/build-portafoglio-v3470-dev-accounting-rules-italian-ui-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact V3.4.77 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3477-dev-trade-republic-price-fix.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing V3.4.77 workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]; i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1; continue
+              name=line[len('      - name: '):].strip()
+              j=i+1; script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1; block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '): break
+                          if raw.startswith('          '):
+                              block.append(raw[10:]); k+=1; continue
+                          if raw.strip()=='':
+                              block.append(''); k+=1; continue
+                          if raw.startswith('        '): break
+                          block.append(raw); k+=1
+                      script='\n'.join(block)+'\n'; break
+                  j+=1
+              if script is not None: parsed.append((name,script))
+              i=j if j>i else i+1
+
+          start_name='Rebuild exact V3.4.76 source'
+          end_name='Verify V3.4.77 Trade Republic price fix and safety'
+          started=False; reached=False
+          for name,script in parsed:
+              if name==start_name: started=True
+              if not started: continue
+              print(f'===== REPLAY {name} =====')
+              subprocess.run(['bash','-euo','pipefail','-c',script],check=True,env=os.environ.copy())
+              if name==end_name:
+                  reached=True
+                  break
+
+          if not started or not reached:
+              raise RuntimeError('Could not reconstruct exact V3.4.77 source')
+          print('V3.4.77 source reconstructed successfully')
+          PYREPLAY
+
+      - name: Patch V3.4.77 FIX1 official FEGI ISIN
+        shell: bash
+        run: |
+          python3 - <<'PY3477FIX1'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          if 'versionCode 133' not in gradle:
+              raise RuntimeError('V3.4.77 versionCode missing')
+          if 'versionName "3.4.77-dev-trade-republic-price-fix"' not in gradle:
+              raise RuntimeError('V3.4.77 versionName missing')
+          if 'DEV 3.4.77 TR PRICE FIX' not in main:
+              raise RuntimeError('V3.4.77 visible label missing')
+          if 'repairTradeRepublicPricesV3477' not in main:
+              raise RuntimeError('V3.4.77 repair method missing')
+
+          gradle=gradle.replace('versionCode 133','versionCode 134',1)
+          gradle=gradle.replace(
+              'versionName "3.4.77-dev-trade-republic-price-fix"',
+              'versionName "3.4.77-dev-trade-republic-price-fix-fix1"',
+              1
+          )
+          main=main.replace(
+              'DEV 3.4.77 TR PRICE FIX',
+              'DEV 3.4.77 FIX1'
+          )
+
+          # Correct ONLY the wrong FEGI ISIN in V3.4.77 logic.
+          # Official ISIN: IE000OBK3UE0 (letter O after IE000), not IE0000BK3UE0.
+          if main.count('IE0000BK3UE0') < 3:
+              raise RuntimeError('Expected wrong FEGI ISIN occurrences not found')
+          main=main.replace('IE0000BK3UE0','IE000OBK3UE0')
+
+          # Update misleading comment as well.
+          main=main.replace(
+              'Correct the historical typo too: IE0000BK3UE0 uses ZERO, not letter O.',
+              'Official FEGI ISIN: IE000OBK3UE0 uses letter O after IE000.'
+          )
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          if db_path.read_bytes()!=db_before:
+              raise RuntimeError('DbHelper changed unexpectedly')
+
+          print('V3.4.77 FIX1 applied: official FEGI ISIN corrected only')
+          PY3477FIX1
+
+      - name: Verify V3.4.77 FIX1 official FEGI correction
+        shell: bash
+        run: |
+          python3 - <<'PY3477FIX1CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+          compact=lambda x:re.sub(r'\s+','',x)
+
+          assert 'versionCode 134' in g
+          assert 'versionName "3.4.77-dev-trade-republic-price-fix-fix1"' in g
+          assert 'DEV 3.4.77 FIX1' in s
+          assert re.search(r'DB_VERSION\s*=\s*18',d)
+
+          # Official FEGI ISIN must be used everywhere in the V3477 repair/protection logic.
+          assert 'IE000OBK3UE0' in s
+          assert 'IE0000BK3UE0' not in s
+
+          # Exact FEGI target remains 135.12 EUR from q=5.4678.
+          qty=5.4678
+          px=24.711949961593326
+          assert abs(qty*px-135.12)<0.00001
+
+          # Keep all seven Trade Republic target prices intact.
+          for marker in [
+              '24.001472196790456',
+              '24.711949961593326',
+              '5.019971879456123',
+              '20.01925250288981',
+              '25.265888456549934',
+              '26.561020449611874',
+              '6.68',
+          ]:
+              assert marker in s,marker
+
+          # No quantity/PMC changes in the V3477 repair.
+          p=s.index('void repairTradeRepublicPricesV3477()')
+          nxt=s.find('\n              void ',p+10)
+          method=s[p:nxt if nxt>0 else len(s)]
+          mc=compact(method)
+          assert 'cv.put("quantity"' not in method
+          assert 'cv.put("pmc"' not in method
+          assert 'SETquantity=' not in mc
+          assert 'SETpmc=' not in mc
+
+          # Home and Dashboard still invoke repair before normalization.
+          assert s.count('repairTradeRepublicPricesV3477();')>=2
+          for method_name in ['void showHome()','void showDashboard()']:
+              p=s.find(method_name); assert p>=0
+              window=s[p:p+2200]
+              a=window.find('repairTradeRepublicPricesV3477();')
+              b=window.find('normalizeLiveCashAllPortfoliosV3464();')
+              assert a>=0 and b>=0 and a<b,method_name
+
+          # Expected Trade Republic snapshot total after this last correction.
+          totals=[450.75,135.12,99.23,31.07,19.48,10.07,6.68]
+          assert abs(sum(totals)-752.40)<0.000001
+
+          # Preserve data-integrity and prior stable functionality.
+          for marker in [
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'positions_block_tr_placeholder18_v3477',
+              'positions_block_tr_placeholder14_fix_v3477',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'V3474_FIX4_DIRECT_OPEN_POSITION_HOME_TOTAL',
+              'V3474_FIX2_NORMALIZED_BROKER_TOTALS',
+              'V3474_FIX3_POSITION_FIRST_HOME_TOTAL',
+              'V3473_POSITION_CARD_AMOUNT_COLORS',
+              'V3472_FIX4_FIX2_IMMEDIATE_VISUAL_SYNC',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+              'applyHistoricalUiSafetyV3462',
+          ]:
+              assert marker in s or marker in d,marker
+
+          print('V3.4.77 FIX1 verified: official FEGI ISIN corrected; quantity/PMC untouched; TR total target 752.40')
+          PY3477FIX1CHECK
+
+      - name: Build signed V3.4.77 FIX1 APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.77 FIX1 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.77 FIX1 signed APK verified"
+
+      - name: Upload signed V3.4.77 FIX1 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3477-FIX1-OFFICIAL-FEGI-ISIN-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
