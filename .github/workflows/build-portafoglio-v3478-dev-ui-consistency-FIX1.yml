@@ -1,0 +1,433 @@
+name: Build Portafoglio 2026 V3.4.78 FIX1 Safe UI Consistency
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3478-dev-ui-consistency-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3478-dev-ui-consistency.yml"
+      - ".github/workflows/build-portafoglio-v3477-dev-trade-republic-price-fix-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3477-dev-trade-republic-price-fix.yml"
+      - ".github/workflows/build-portafoglio-v3476-dev-trade-republic-recovery-diagnostics.yml"
+      - ".github/workflows/build-portafoglio-v3475-dev-trade-republic-diagnostics.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-home-wealth-diagnostics-FIX5.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX3.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX2-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync.yml"
+      - ".github/workflows/build-portafoglio-v3473-dev-position-card-amount-colors-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3472-dev-position-functional-bar-dialog-ui-FIX4-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3471-dev-instrument-lifecycle-acc-div.yml"
+      - ".github/workflows/build-portafoglio-v3470-dev-accounting-rules-italian-ui-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact V3.4.78 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3478-dev-ui-consistency.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing V3.4.78 workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]; i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1; continue
+              name=line[len('      - name: '):].strip()
+              j=i+1; script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1; block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '): break
+                          if raw.startswith('          '):
+                              block.append(raw[10:]); k+=1; continue
+                          if raw.strip()=='':
+                              block.append(''); k+=1; continue
+                          if raw.startswith('        '): break
+                          block.append(raw); k+=1
+                      script='\n'.join(block)+'\n'; break
+                  j+=1
+              if script is not None: parsed.append((name,script))
+              i=j if j>i else i+1
+
+          start_name='Rebuild exact V3.4.77 FIX1 source'
+          end_name='Verify V3.4.78 UI consistency and regressions'
+          started=False; reached=False
+          for name,script in parsed:
+              if name==start_name: started=True
+              if not started: continue
+              print(f'===== REPLAY {name} =====')
+              subprocess.run(['bash','-euo','pipefail','-c',script],check=True,env=os.environ.copy())
+              if name==end_name:
+                  reached=True
+                  break
+
+          if not started or not reached:
+              raise RuntimeError('Could not reconstruct exact V3.4.78 source')
+          print('V3.4.78 source reconstructed successfully')
+          PYREPLAY
+
+      - name: Patch V3.4.78 FIX1 safe local position labels
+        shell: bash
+        run: |
+          python3 - <<'PY3478FIX1'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          if 'versionCode 135' not in gradle:
+              raise RuntimeError('V3.4.78 versionCode missing')
+          if 'versionName "3.4.78-dev-ui-consistency"' not in gradle:
+              raise RuntimeError('V3.4.78 versionName missing')
+          if 'DEV 3.4.78 UI CONSISTENCY' not in main:
+              raise RuntimeError('V3.4.78 visible label missing')
+
+          gradle=gradle.replace('versionCode 135','versionCode 136',1)
+          gradle=gradle.replace(
+              'versionName "3.4.78-dev-ui-consistency"',
+              'versionName "3.4.78-dev-ui-consistency-fix1"',
+              1
+          )
+          main=main.replace(
+              'DEV 3.4.78 UI CONSISTENCY',
+              'DEV 3.4.78 FIX1'
+          )
+
+          def matching_brace(t,o):
+              d=0;i=o;ins=inc=lin=blk=False;esc=False
+              while i<len(t):
+                  c=t[i];n=t[i+1] if i+1<len(t) else ''
+                  if lin:
+                      if c=='\n':lin=False
+                      i+=1;continue
+                  if blk:
+                      if c=='*' and n=='/':blk=False;i+=2;continue
+                      i+=1;continue
+                  if ins:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='"':ins=False
+                      i+=1;continue
+                  if inc:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":inc=False
+                      i+=1;continue
+                  if c=='/' and n=='/':lin=True;i+=2;continue
+                  if c=='/' and n=='*':blk=True;i+=2;continue
+                  if c=='"':ins=True;i+=1;continue
+                  if c=="'":inc=True;i+=1;continue
+                  if c=='{':d+=1
+                  elif c=='}':
+                      d-=1
+                      if d==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          # Remove the risky whole-screen post-processing inserted into
+          # schedulePositionCardAmountColorsV3473().
+          risky=r'''
+                  if(content!=null){
+                      content.post(new Runnable(){
+                          @Override public void run(){ applyPositionIncomeLabelsV3478(content); }
+                      });
+                      content.postDelayed(new Runnable(){
+                          @Override public void run(){ applyPositionIncomeLabelsV3478(content); }
+                      },120);
+                  }
+          '''
+          if risky not in main:
+              raise RuntimeError('Risky V3478 global label pass not found')
+          main=main.replace(risky,'',1)
+
+          # Remove old global-recursive helpers only.
+          for method_name in [
+              'void applyPositionIncomeLabelsV3478(android.view.View v)',
+              'boolean ancestorContainsTextV3478(android.view.View start,String needle)',
+              'boolean viewTreeContainsTextV3478(android.view.View v,String needle)'
+          ]:
+              p=main.find(method_name)
+              if p<0:
+                  raise RuntimeError('Old V3478 helper missing: '+method_name)
+              o=main.find('{',p); c=matching_brace(main,o)
+              # Include trailing whitespace/newlines only.
+              end=c+1
+              while end<len(main) and main[end] in ' \t\r\n':
+                  end+=1
+              main=main[:p]+main[end:]
+
+          # Integrate label styling into the existing per-TextView position pass.
+          old='if(v instanceof android.widget.TextView)stylePositionCardAmountTextV3473((android.widget.TextView)v);'
+          new='''if(v instanceof android.widget.TextView){
+                  android.widget.TextView tv=(android.widget.TextView)v;
+                  stylePositionCardAmountTextV3473(tv);
+                  stylePositionIncomeLabelV3478Fix1(tv);
+              }'''
+          if old not in main:
+              raise RuntimeError('applyPositionCardAmountColorsV3473 TextView line missing')
+          main=main.replace(old,new,1)
+
+          helper=r'''
+              // V3.4.78 FIX1: card-local income label styling only.
+              // Never scans the whole Home/Positions tree.
+              void stylePositionIncomeLabelV3478Fix1(android.widget.TextView t){
+                  if(t==null||t instanceof android.widget.EditText)return;
+                  CharSequence raw=t.getText();
+                  if(raw==null)return;
+                  String s=raw.toString();
+                  if(!s.contains("P/L")||!s.contains("Proventi"))return;
+
+                  boolean certificate=isNearestPositionCardCertificateV3478Fix1(t);
+                  String replacement=certificate?"Cedole":"Div.";
+
+                  android.text.SpannableStringBuilder b=
+                      new android.text.SpannableStringBuilder(raw);
+                  int at=b.toString().indexOf("Proventi");
+                  if(at>=0){
+                      b.replace(at,at+"Proventi".length(),replacement);
+                      t.setText(b);
+                  }
+              }
+
+              boolean isNearestPositionCardCertificateV3478Fix1(android.view.View start){
+                  android.view.View cur=start;
+
+                  // Maximum 3 ancestors: enough to reach the local card,
+                  // deliberately never reaching the global content container.
+                  for(int level=0;level<3&&cur!=null;level++){
+                      android.view.ViewParent pp=cur.getParent();
+                      if(!(pp instanceof android.view.ViewGroup))return false;
+                      android.view.ViewGroup g=(android.view.ViewGroup)pp;
+
+                      // A large container is the page/root: stop immediately.
+                      if(g.getChildCount()>14)return false;
+
+                      if(localTreeContainsTextV3478Fix1(g,"Certificati",0,3))
+                          return true;
+
+                      // Once the local card boundary is identifiable, stop.
+                      if(localTreeContainsTextV3478Fix1(g,"Apri titolo",0,3))
+                          return false;
+
+                      cur=g;
+                  }
+                  return false;
+              }
+
+              boolean localTreeContainsTextV3478Fix1(
+                  android.view.View v,String needle,int depth,int maxDepth
+              ){
+                  if(v==null||depth>maxDepth)return false;
+                  if(v instanceof android.widget.TextView){
+                      CharSequence q=((android.widget.TextView)v).getText();
+                      if(q!=null&&q.toString().contains(needle))return true;
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      int count=Math.min(g.getChildCount(),14);
+                      for(int i=0;i<count;i++){
+                          if(localTreeContainsTextV3478Fix1(
+                              g.getChildAt(i),needle,depth+1,maxDepth
+                          ))return true;
+                      }
+                  }
+                  return false;
+              }
+          '''
+
+          # Insert FIX1 helper immediately before showPositionDetail, where
+          # the existing position-color helper block lives.
+          anchor='    void showPositionDetail(String broker,String isin){'
+          p=main.find(anchor)
+          if p<0:
+              raise RuntimeError('showPositionDetail anchor missing')
+          main=main[:p]+helper+'\n'+main[p:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          if db_path.read_bytes()!=db_before:
+              raise RuntimeError('DbHelper changed unexpectedly')
+
+          print('V3.4.78 FIX1 applied: global recursive label scan removed; local card styling installed')
+          PY3478FIX1
+
+      - name: Verify V3.4.78 FIX1 stability and UI rules
+        shell: bash
+        run: |
+          python3 - <<'PY3478FIX1CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+          compact=lambda x:re.sub(r'\s+','',x)
+
+          assert 'versionCode 136' in g
+          assert 'versionName "3.4.78-dev-ui-consistency-fix1"' in g
+          assert 'DEV 3.4.78 FIX1' in s
+          assert re.search(r'DB_VERSION\s*=\s*18',d)
+
+          # Risky whole-page traversal is gone.
+          assert 'applyPositionIncomeLabelsV3478(content)' not in s
+          assert 'ancestorContainsTextV3478' not in s
+          assert 'viewTreeContainsTextV3478' not in s
+
+          # Safe card-local label logic exists.
+          for marker in [
+              'stylePositionIncomeLabelV3478Fix1',
+              'isNearestPositionCardCertificateV3478Fix1',
+              'localTreeContainsTextV3478Fix1',
+              'certificate?"Cedole":"Div."',
+              'if(g.getChildCount()>14)return false',
+              'depth>maxDepth',
+          ]:
+              assert marker in s,marker
+
+          # Existing amount colors in positions remain.
+          for marker in [
+              'V3473_POSITION_CARD_AMOUNT_COLORS',
+              'stylePositionCardAmountTextV3473',
+              'applyPositionCardAmountColorsV3473',
+              'semanticSpanV3470Fix3',
+          ]:
+              assert marker in s,marker
+
+          # Aggiorna patrimonio semantic color fix remains.
+          for marker in [
+              'applyUpdatePortfolioSemanticColorsV3478',
+              'Guadagno/Perdita:',
+              'Commissione acquisto residua:',
+              'parseItalianVisibleNumberV3478',
+          ]:
+              assert marker in s,marker
+
+          # Trade Republic corrected total logic remains intact.
+          assert 'IE000OBK3UE0' in s
+          assert 'IE0000BK3UE0' not in s
+          assert 'repairTradeRepublicPricesV3477' in s
+          assert 'positions_block_tr_placeholder18_v3477' in s
+
+          # No financial data writes introduced by FIX1.
+          p=s.index('// V3.4.78 FIX1:')
+          fix=s[p:]
+          fc=compact(fix)
+          assert 'cv.put("quantity"' not in fix
+          assert 'cv.put("pmc"' not in fix
+          assert 'UPDATEpositionsSETquantity=' not in fc
+          assert 'UPDATEpositionsSETpmc=' not in fc
+
+          # Critical data-integrity protections.
+          for marker in [
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'V3474_FIX4_DIRECT_OPEN_POSITION_HOME_TOTAL',
+              'V3474_FIX2_NORMALIZED_BROKER_TOTALS',
+              'V3474_FIX3_POSITION_FIRST_HOME_TOTAL',
+              'V3472_FIX4_FIX2_IMMEDIATE_VISUAL_SYNC',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+              'applyHistoricalUiSafetyV3462',
+          ]:
+              assert marker in s or marker in d,marker
+
+          print('V3.4.78 FIX1 verified: no whole-screen recursive pass; local labels + update colors preserved')
+          PY3478FIX1CHECK
+
+      - name: Build signed V3.4.78 FIX1 APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.78 FIX1 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.78 FIX1 signed APK verified"
+
+      - name: Upload signed V3.4.78 FIX1 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3478-FIX1-SAFE-UI-CONSISTENCY-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
