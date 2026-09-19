@@ -1,0 +1,189 @@
+name: Inspect Portafoglio 2026 Performance Source V3.4.81 FIX2
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/inspect-portafoglio-v3481-fix2-performance-source.yml"
+      - ".github/workflows/build-portafoglio-v3481-dev-performance-total-fix-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3480-dev-performance-diagnostics-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3478-dev-ui-consistency-FIX1.yml"
+      - "portafoglio-v3444-dev.zip"
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Rebuild exact V3.4.81 FIX2 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3481-dev-performance-total-fix-FIX2.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]; i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1; continue
+              name=line[len('      - name: '):].strip()
+              j=i+1; script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1; block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '): break
+                          if raw.startswith('          '):
+                              block.append(raw[10:]); k+=1; continue
+                          if raw.strip()=='':
+                              block.append(''); k+=1; continue
+                          if raw.startswith('        '): break
+                          block.append(raw); k+=1
+                      script='\n'.join(block)+'\n'; break
+                  j+=1
+              if script is not None:
+                  parsed.append((name,script))
+              i=j if j>i else i+1
+
+          start='Rebuild exact V3.4.80 FIX1 source'
+          end='Verify V3.4.81 FIX2 Performance total fix and safety'
+          started=False; reached=False
+
+          for name,script in parsed:
+              if name==start:
+                  started=True
+              if not started:
+                  continue
+              print(f'===== REPLAY {name} =====')
+              subprocess.run(
+                  ['bash','-euo','pipefail','-c',script],
+                  check=True,
+                  env=os.environ.copy()
+              )
+              if name==end:
+                  reached=True
+                  break
+
+          if not started or not reached:
+              raise RuntimeError('Could not reconstruct exact V3.4.81 FIX2 source')
+
+          print('V3.4.81 FIX2 source reconstructed')
+          PYREPLAY
+
+      - name: Print exact Performance navigation and SQL source
+        shell: bash
+        run: |
+          python3 - <<'PYINSPECT'
+          from pathlib import Path
+          import re
+
+          p=Path('android-project-v3460/app/src/main/java/it/portafoglio2026/v3/MainActivity.java')
+          s=p.read_text(encoding='utf-8')
+
+          def matching_brace(t,o):
+              d=0;i=o;ins=inc=lin=blk=False;esc=False
+              while i<len(t):
+                  c=t[i]; n=t[i+1] if i+1<len(t) else ''
+                  if lin:
+                      if c=='\n': lin=False
+                      i+=1; continue
+                  if blk:
+                      if c=='*' and n=='/':
+                          blk=False; i+=2; continue
+                      i+=1; continue
+                  if ins:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=='"': ins=False
+                      i+=1; continue
+                  if inc:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=="'": inc=False
+                      i+=1; continue
+                  if c=='/' and n=='/':
+                      lin=True; i+=2; continue
+                  if c=='/' and n=='*':
+                      blk=True; i+=2; continue
+                  if c=='"':
+                      ins=True; i+=1; continue
+                  if c=="'":
+                      inc=True; i+=1; continue
+                  if c=='{':
+                      d+=1
+                  elif c=='}':
+                      d-=1
+                      if d==0:
+                          return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          def print_method_by_regex(label, pattern, multiple=False):
+              found=0
+              pos=0
+              while True:
+                  m=re.search(pattern,s[pos:])
+                  if not m:
+                      break
+                  a=pos+m.start()
+                  o=s.find('{',a)
+                  if o<0:
+                      break
+                  c=matching_brace(s,o)
+                  print('\n\n===== '+label+f' #{found+1} =====')
+                  print(s[a:c+1])
+                  print('===== END '+label+f' #{found+1} =====\n')
+                  found+=1
+                  pos=c+1
+                  if not multiple:
+                      break
+              if found==0:
+                  print('\n===== '+label+' NOT FOUND =====\n')
+
+          print_method_by_regex(
+              'SHOW_HOME',
+              r'\bvoid\s+showHome\s*\(\s*\)\s*\{'
+          )
+
+          print_method_by_regex(
+              'SHOW_DASHBOARD',
+              r'\bvoid\s+showDashboard\s*\([^)]*\)\s*\{'
+          )
+
+          print_method_by_regex(
+              'SHOW_PERFORMANCE',
+              r'\b(?:void|[A-Za-z0-9_<>\[\]]+)\s+showPerformance\s*\([^)]*\)\s*\{',
+              multiple=True
+          )
+
+          print_method_by_regex(
+              'PERFORMANCE_COSTS_FOR_PERIOD',
+              r'\b(?:double|Double|float|long|int|[A-Za-z0-9_<>\[\]]+)\s+performanceCostsForPeriod\s*\([^)]*\)\s*\{'
+          )
+
+          print('\n\n===== ALL showPerformance CALLS =====')
+          for i,line in enumerate(s.splitlines(),1):
+              if 'showPerformance(' in line:
+                  print(f'{i}: {line.rstrip()}')
+          print('===== END ALL showPerformance CALLS =====')
+
+          print('\n\n===== ALL performanceCostsForPeriod CALLS =====')
+          for i,line in enumerate(s.splitlines(),1):
+              if 'performanceCostsForPeriod(' in line:
+                  print(f'{i}: {line.rstrip()}')
+          print('===== END ALL performanceCostsForPeriod CALLS =====')
+          PYINSPECT
