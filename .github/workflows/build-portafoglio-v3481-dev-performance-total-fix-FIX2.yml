@@ -1,0 +1,379 @@
+name: Build Portafoglio 2026 V3.4.81 FIX2 Performance Total Fix
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3481-dev-performance-total-fix-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3481-dev-performance-total-fix-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3481-dev-performance-total-fix.yml"
+      - ".github/workflows/build-portafoglio-v3480-dev-performance-diagnostics-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3478-dev-ui-consistency-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3478-dev-ui-consistency.yml"
+      - ".github/workflows/build-portafoglio-v3477-dev-trade-republic-price-fix-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3477-dev-trade-republic-price-fix.yml"
+      - ".github/workflows/build-portafoglio-v3476-dev-trade-republic-recovery-diagnostics.yml"
+      - ".github/workflows/build-portafoglio-v3475-dev-trade-republic-diagnostics.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-home-wealth-diagnostics-FIX5.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX3.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX2-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync.yml"
+      - ".github/workflows/build-portafoglio-v3473-dev-position-card-amount-colors-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3472-dev-position-functional-bar-dialog-ui-FIX4-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3471-dev-instrument-lifecycle-acc-div.yml"
+      - ".github/workflows/build-portafoglio-v3470-dev-accounting-rules-italian-ui-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact V3.4.80 FIX1 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3480-dev-performance-diagnostics-FIX1.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing V3.4.80 FIX1 workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]; i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1; continue
+              name=line[len('      - name: '):].strip()
+              j=i+1; script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1; block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '): break
+                          if raw.startswith('          '):
+                              block.append(raw[10:]); k+=1; continue
+                          if raw.strip()=='':
+                              block.append(''); k+=1; continue
+                          if raw.startswith('        '): break
+                          block.append(raw); k+=1
+                      script='\n'.join(block)+'\n'; break
+                  j+=1
+              if script is not None: parsed.append((name,script))
+              i=j if j>i else i+1
+
+          start_name='Rebuild exact V3.4.78 FIX1 stable source'
+          end_name='Verify V3.4.80 FIX1 diagnostics and safety'
+          started=False; reached=False
+          for name,script in parsed:
+              if name==start_name: started=True
+              if not started: continue
+              print(f'===== REPLAY {name} =====')
+              subprocess.run(['bash','-euo','pipefail','-c',script],check=True,env=os.environ.copy())
+              if name==end_name:
+                  reached=True
+                  break
+
+          if not started or not reached:
+              raise RuntimeError('Could not reconstruct exact V3.4.80 FIX1 source')
+          print('V3.4.80 FIX1 source reconstructed successfully')
+          PYREPLAY
+
+      - name: Patch V3.4.81 Home total Performance null broker
+        shell: bash
+        run: |
+          python3 - <<'PY3481'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          if 'versionCode 138' not in gradle:
+              raise RuntimeError('Expected V3.4.80 FIX1 versionCode 138')
+          if 'versionName "3.4.80-dev-performance-diagnostics-fix1"' not in gradle:
+              raise RuntimeError('Expected V3.4.80 FIX1 versionName')
+          if 'DEV 3.4.80 FIX1 PERF DIAG' not in main:
+              raise RuntimeError('Expected V3.4.80 FIX1 visible label')
+
+          gradle=gradle.replace('versionCode 138','versionCode 139',1)
+          gradle=gradle.replace(
+              'versionName "3.4.80-dev-performance-diagnostics-fix1"',
+              'versionName "3.4.81-dev-performance-total-fix"',
+              1
+          )
+          main=main.replace(
+              'DEV 3.4.80 FIX1 PERF DIAG',
+              'DEV 3.4.81 PERF TOTAL FIX'
+          )
+
+          def matching_brace(t,o):
+              d=0;i=o;ins=inc=lin=blk=False;esc=False
+              while i<len(t):
+                  c=t[i];n=t[i+1] if i+1<len(t) else ''
+                  if lin:
+                      if c=='\n':lin=False
+                      i+=1;continue
+                  if blk:
+                      if c=='*' and n=='/':blk=False;i+=2;continue
+                      i+=1;continue
+                  if ins:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='"':ins=False
+                      i+=1;continue
+                  if inc:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":inc=False
+                      i+=1;continue
+                  if c=='/' and n=='/':lin=True;i+=2;continue
+                  if c=='/' and n=='*':blk=True;i+=2;continue
+                  if c=='"':ins=True;i+=1;continue
+                  if c=="'":inc=True;i+=1;continue
+                  if c=='{':d+=1
+                  elif c=='}':
+                      d-=1
+                      if d==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          # Locate showHome() only: the crash stack points to its Performance button.
+          m=re.search(r'\bvoid\s+showHome\s*\(\s*\)\s*\{',main)
+          if not m:
+              raise RuntimeError('showHome() not found')
+          o=main.find('{',m.start()); c=matching_brace(main,o)
+          body=main[m.start():c+1]
+
+          # The broken call is the 3-argument Performance overload:
+          # showPerformance(<mode>, <period>, null)
+          # Replace ONLY inside Home, and ONLY a null final argument.
+          pattern=re.compile(
+              r'showPerformance\s*\(\s*([^,\n]+?)\s*,\s*([^,\n]+?)\s*,\s*null\s*\)'
+          )
+          matches=list(pattern.finditer(body))
+          if not matches:
+              raise RuntimeError('Broken Home showPerformance(...,null) call not found')
+
+          body2,count=pattern.subn(
+              lambda mm: 'showPerformance('+mm.group(1).strip()+','+
+                         mm.group(2).strip()+',"Totale")',
+              body
+          )
+
+          if count<1:
+              raise RuntimeError('No Home Performance null broker replaced')
+
+          main=main[:m.start()]+body2+main[c+1:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          if db_path.read_bytes()!=db_before:
+              raise RuntimeError('DbHelper changed unexpectedly')
+
+          print(f'V3.4.81 applied: replaced {count} Home Performance null broker call(s) with Totale')
+          PY3481
+
+      - name: Verify V3.4.81 FIX2 Performance total fix and safety
+        shell: bash
+        run: |
+          python3 - <<'PY3481FIX2CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          s=main_path.read_text(encoding='utf-8')
+          d=db_path.read_text(encoding='utf-8')
+          g=gradle_path.read_text(encoding='utf-8')
+
+          def matching_brace(t,o):
+              d=0;i=o;ins=inc=lin=blk=False;esc=False
+              while i<len(t):
+                  c=t[i];n=t[i+1] if i+1<len(t) else ''
+                  if lin:
+                      if c=='\n':lin=False
+                      i+=1;continue
+                  if blk:
+                      if c=='*' and n=='/':blk=False;i+=2;continue
+                      i+=1;continue
+                  if ins:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='"':ins=False
+                      i+=1;continue
+                  if inc:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":inc=False
+                      i+=1;continue
+                  if c=='/' and n=='/':lin=True;i+=2;continue
+                  if c=='/' and n=='*':blk=True;i+=2;continue
+                  if c=='"':ins=True;i+=1;continue
+                  if c=="'":inc=True;i+=1;continue
+                  if c=='{':d+=1
+                  elif c=='}':
+                      d-=1
+                      if d==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          def require(cond,msg):
+              if not cond:
+                  raise RuntimeError(msg)
+              print("OK:",msg)
+
+          require('versionCode 139' in g,'versionCode 139')
+          require('versionName "3.4.81-dev-performance-total-fix"' in g,'versionName V3.4.81')
+          require('DEV 3.4.81 PERF TOTAL FIX' in s,'visible V3.4.81 label')
+          require(re.search(r'DB_VERSION\s*=\s*18',d) is not None,'DB version 18')
+
+          hm=re.search(r'\bvoid\s+showHome\s*\(\s*\)\s*\{',s)
+          require(hm is not None,'showHome found')
+          ho=s.find('{',hm.start())
+          hc=matching_brace(s,ho)
+          home=s[hm.start():hc+1]
+
+          null_pat=re.compile(
+              r'showPerformance\s*\(\s*[^,\n]+?\s*,\s*[^,\n]+?\s*,\s*null\s*\)'
+          )
+          total_pat=re.compile(
+              r'showPerformance\s*\(\s*[^,\n]+?\s*,\s*[^,\n]+?\s*,\s*"Totale"\s*\)'
+          )
+
+          require(null_pat.search(home) is None,'Home no longer passes null broker')
+          require(total_pat.search(home) is not None,'Home passes Totale broker')
+
+          # Crash diagnostics remain until the phone test confirms the fix.
+          for marker in [
+              'installPerformanceCrashDiagnosticsV3480',
+              'recordPerformanceScreenV3480',
+              'showPerformanceCrashDiagnosticCardV3480',
+          ]:
+              require(marker in s,'diagnostic marker '+marker)
+
+          # Existing user-visible and data-safety protections.
+          for marker in [
+              'stylePositionIncomeLabelV3478Fix1',
+              'applyUpdatePortfolioSemanticColorsV3478',
+              'stylePositionCardAmountTextV3473',
+              'repairTradeRepublicPricesV3477',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+              'applyHistoricalUiSafetyV3462',
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'V3474_FIX4_DIRECT_OPEN_POSITION_HOME_TOTAL',
+              'V3474_FIX2_NORMALIZED_BROKER_TOTALS',
+              'V3474_FIX3_POSITION_FIRST_HOME_TOTAL',
+              'V3473_POSITION_CARD_AMOUNT_COLORS',
+              'V3472_FIX4_FIX2_IMMEDIATE_VISUAL_SYNC',
+          ]:
+              require(marker in s or marker in d,'preserved '+marker)
+
+          # The V3.4.81 patch is navigation-only: no new financial writes in Home.
+          compact=lambda x:re.sub(r'\s+','',x)
+          hcpt=compact(home)
+          for forbidden in [
+              'UPDATEpositions',
+              'UPDATEportfolio_status',
+              'INSERTINTOpositions',
+              'DELETEFROMpositions',
+              'cv.put("quantity"',
+              'cv.put("pmc"',
+              'cv.put("price"',
+          ]:
+              require(forbidden not in hcpt,'no Home financial write '+forbidden)
+
+          print('V3.4.81 FIX2 verifier passed')
+          PY3481FIX2CHECK
+
+      - name: Build signed V3.4.81 FIX2 APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.81 FIX2 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.81 signed APK verified"
+
+      - name: Upload signed V3.4.81 FIX2 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3481-FIX2-PERFORMANCE-TOTAL-FIX-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
