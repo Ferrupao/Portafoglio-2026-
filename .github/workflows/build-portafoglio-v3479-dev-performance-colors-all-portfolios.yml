@@ -1,0 +1,627 @@
+name: Build Portafoglio 2026 V3.4.79 Performance Colors All Portfolios
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3479-dev-performance-colors-all-portfolios.yml"
+      - ".github/workflows/build-portafoglio-v3478-dev-ui-consistency-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3478-dev-ui-consistency.yml"
+      - ".github/workflows/build-portafoglio-v3477-dev-trade-republic-price-fix-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3477-dev-trade-republic-price-fix.yml"
+      - ".github/workflows/build-portafoglio-v3476-dev-trade-republic-recovery-diagnostics.yml"
+      - ".github/workflows/build-portafoglio-v3475-dev-trade-republic-diagnostics.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-home-wealth-diagnostics-FIX5.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX3.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX2-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync.yml"
+      - ".github/workflows/build-portafoglio-v3473-dev-position-card-amount-colors-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3472-dev-position-functional-bar-dialog-ui-FIX4-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3471-dev-instrument-lifecycle-acc-div.yml"
+      - ".github/workflows/build-portafoglio-v3470-dev-accounting-rules-italian-ui-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact V3.4.78 FIX1 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3478-dev-ui-consistency-FIX1.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing V3.4.78 FIX1 workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]; i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1; continue
+              name=line[len('      - name: '):].strip()
+              j=i+1; script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1; block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '): break
+                          if raw.startswith('          '):
+                              block.append(raw[10:]); k+=1; continue
+                          if raw.strip()=='':
+                              block.append(''); k+=1; continue
+                          if raw.startswith('        '): break
+                          block.append(raw); k+=1
+                      script='\n'.join(block)+'\n'; break
+                  j+=1
+              if script is not None: parsed.append((name,script))
+              i=j if j>i else i+1
+
+          start_name='Rebuild exact V3.4.78 source'
+          end_name='Verify V3.4.78 FIX1 stability and UI rules'
+          started=False; reached=False
+          for name,script in parsed:
+              if name==start_name: started=True
+              if not started: continue
+              print(f'===== REPLAY {name} =====')
+              subprocess.run(['bash','-euo','pipefail','-c',script],check=True,env=os.environ.copy())
+              if name==end_name:
+                  reached=True
+                  break
+
+          if not started or not reached:
+              raise RuntimeError('Could not reconstruct exact V3.4.78 FIX1 source')
+          print('V3.4.78 FIX1 source reconstructed successfully')
+          PYREPLAY
+
+      - name: Patch V3.4.79 performance navigation and semantic colors for all portfolios
+        shell: bash
+        run: |
+          python3 - <<'PY3479'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          assert 'versionCode 136' in gradle
+          assert 'versionName "3.4.78-dev-ui-consistency-fix1"' in gradle
+          assert 'DEV 3.4.78 FIX1' in main
+          assert re.search(r'DB_VERSION\s*=\s*18',db_path.read_text(encoding='utf-8'))
+
+          gradle=gradle.replace('versionCode 136','versionCode 137',1)
+          gradle=gradle.replace(
+              'versionName "3.4.78-dev-ui-consistency-fix1"',
+              'versionName "3.4.79-dev-performance-colors-all-portfolios"',
+              1
+          )
+          main=main.replace('DEV 3.4.78 FIX1','DEV 3.4.79 PERF COLORS ALL')
+
+          def matching_brace(t,o):
+              d=0;i=o;ins=inc=lin=blk=False;esc=False
+              while i<len(t):
+                  c=t[i]; n=t[i+1] if i+1<len(t) else ''
+                  if lin:
+                      if c=='\n': lin=False
+                      i+=1; continue
+                  if blk:
+                      if c=='*' and n=='/': blk=False; i+=2; continue
+                      i+=1; continue
+                  if ins:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=='"': ins=False
+                      i+=1; continue
+                  if inc:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=="'": inc=False
+                      i+=1; continue
+                  if c=='/' and n=='/': lin=True; i+=2; continue
+                  if c=='/' and n=='*': blk=True; i+=2; continue
+                  if c=='"': ins=True; i+=1; continue
+                  if c=="'": inc=True; i+=1; continue
+                  if c=='{': d+=1
+                  elif c=='}':
+                      d-=1
+                      if d==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          # A) Every screen that uses heading() gets the SAME semantic color pass.
+          # This is intentionally broker-agnostic: Directa, Trade Republic and future brokers.
+          hm=re.search(r'\bvoid\s+heading\s*\([^)]*\)\s*\{',main)
+          if not hm:
+              raise RuntimeError('heading(...) method not found')
+          ho=main.find('{',hm.start()); hc=matching_brace(main,ho)
+          hbody=main[hm.start():hc+1]
+          if 'scheduleUniversalSemanticColorsV3479();' not in hbody:
+              hbody=hbody[:-1] + '''
+                  scheduleUniversalSemanticColorsV3479();
+              }'''
+          main=main[:hm.start()]+hbody+main[hc+1:]
+
+          # B) Home gets a direct historical Performance route.
+          # It no longer depends on opening Directa, Trade Republic or another broker first.
+          sm=re.search(r'\bvoid\s+showHome\s*\(\s*\)\s*\{',main)
+          if not sm:
+              raise RuntimeError('showHome() not found')
+          so=main.find('{',sm.start()); sc=matching_brace(main,so)
+          sbody=main[sm.start():sc+1]
+          if 'wireHistoricalPerformanceButtonV3479();' not in sbody:
+              sbody=sbody[:-1] + '''
+                  if(content!=null){
+                      content.post(new Runnable(){
+                          @Override public void run(){
+                              wireHistoricalPerformanceButtonV3479();
+                              applyUniversalSemanticColorsV3479(content);
+                          }
+                      });
+                  }
+              }'''
+          main=main[:sm.start()]+sbody+main[sc+1:]
+
+          helpers=r'''
+              // ===== V3.4.79: one semantic-color policy for ALL portfolios =====
+
+              int semanticColorV3479(double value){
+                  if(value>0.0000001)return android.graphics.Color.rgb(46,204,113);
+                  if(value<-0.0000001)return android.graphics.Color.rgb(255,82,82);
+                  return android.graphics.Color.rgb(245,247,250); // zero stays white
+              }
+
+              double parseMetricNumberV3479(String raw){
+                  if(raw==null)return 0;
+                  String x=raw.trim().replace("€","").replace("%","").replace(" ","");
+                  if(x.isEmpty())return 0;
+                  try{
+                      if(x.contains(",")&&x.contains(".")){
+                          if(x.lastIndexOf(',')>x.lastIndexOf('.')){
+                              x=x.replace(".","").replace(',','.');
+                          }else{
+                              x=x.replace(",","");
+                          }
+                      }else if(x.contains(",")){
+                          x=x.replace(',','.');
+                      }
+                      return Double.parseDouble(x);
+                  }catch(Exception e){return 0;}
+              }
+
+              void scheduleUniversalSemanticColorsV3479(){
+                  if(content==null)return;
+                  content.post(new Runnable(){
+                      @Override public void run(){
+                          applyUniversalSemanticColorsV3479(content);
+                      }
+                  });
+              }
+
+              void applyUniversalSemanticColorsV3479(android.view.View v){
+                  if(v instanceof android.widget.TextView){
+                      styleUniversalMetricTextV3479((android.widget.TextView)v);
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++){
+                          applyUniversalSemanticColorsV3479(g.getChildAt(i));
+                      }
+                  }
+              }
+
+              void styleUniversalMetricTextV3479(android.widget.TextView t){
+                  if(t==null||t instanceof android.widget.EditText)return;
+                  CharSequence raw=t.getText();
+                  if(raw==null)return;
+                  String s=raw.toString();
+
+                  boolean metric=
+                      s.contains("P/L")||
+                      s.contains("Guadagno/Perdita")||
+                      s.contains("Lordo")||
+                      s.contains("Netto")||
+                      s.contains("Proventi")||
+                      s.contains("Div.")||
+                      s.contains("Cedole")||
+                      s.contains("Rendimento")||
+                      s.contains("Risultato complessivo")||
+                      s.contains("Recupero fiscale")||
+                      s.contains("Perdita / minus");
+
+                  if(!metric)return;
+
+                  android.text.SpannableStringBuilder b=
+                      new android.text.SpannableStringBuilder(raw);
+
+                  // Labels/descriptions remain white and bold.
+                  b.setSpan(
+                      new android.text.style.ForegroundColorSpan(
+                          android.graphics.Color.rgb(245,247,250)
+                      ),
+                      0,b.length(),
+                      android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                  );
+                  b.setSpan(
+                      new android.text.style.StyleSpan(android.graphics.Typeface.BOLD),
+                      0,b.length(),
+                      android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                  );
+
+                  java.util.regex.Pattern p=java.util.regex.Pattern.compile(
+                      "(?i)(P/L|Guadagno/Perdita|Lordo|Netto|Proventi|Div\\.|Cedole|"+
+                      "Rendimento|Risultato complessivo|Recupero fiscale|Perdita / minus)"+
+                      "\\s*:?\\s*([+\\-]?\\d[\\d.,]*)\\s*(€|%)?"
+                  );
+                  java.util.regex.Matcher m=p.matcher(s);
+
+                  while(m.find()){
+                      double value=parseMetricNumberV3479(m.group(2));
+
+                      // Explicit semantic signs for descriptive rows.
+                      String label=m.group(1)==null?"":m.group(1);
+                      if(label.equalsIgnoreCase("Perdita / minus")&&value>0)value=-value;
+                      if(label.equalsIgnoreCase("Recupero fiscale")&&value>0)value=Math.abs(value);
+
+                      int color=semanticColorV3479(value);
+                      int end=m.end(2);
+                      if(m.group(3)!=null)end=m.end(3);
+
+                      b.setSpan(
+                          new android.text.style.ForegroundColorSpan(color),
+                          m.start(2),end,
+                          android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                      );
+
+                      // P/L and Guadagno/Perdita percentages inherit the amount sign.
+                      if(label.equalsIgnoreCase("P/L")||
+                         label.equalsIgnoreCase("Guadagno/Perdita")){
+                          int lineEnd=s.indexOf('\n',m.end());
+                          if(lineEnd<0)lineEnd=s.length();
+                          java.util.regex.Matcher pctm=java.util.regex.Pattern.compile(
+                              "\\(([-+]?\\d[\\d.,]*)%\\)"
+                          ).matcher(s.substring(m.end(),lineEnd));
+                          if(pctm.find()){
+                              int ps=m.end()+pctm.start(1);
+                              int pe=m.end()+pctm.end(1)+1;
+                              b.setSpan(
+                                  new android.text.style.ForegroundColorSpan(color),
+                                  ps,pe,
+                                  android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                              );
+                          }
+                      }
+                  }
+                  t.setText(b);
+              }
+
+              // ===== V3.4.79: direct historical Performance, independent of broker state =====
+
+              void wireHistoricalPerformanceButtonV3479(){
+                  if(content==null)return;
+                  wireHistoricalPerformanceButtonTreeV3479(content);
+              }
+
+              boolean wireHistoricalPerformanceButtonTreeV3479(android.view.View v){
+                  if(!(v instanceof android.view.ViewGroup))return false;
+                  android.view.ViewGroup g=(android.view.ViewGroup)v;
+
+                  boolean historySection=false;
+                  for(int i=0;i<g.getChildCount();i++){
+                      android.view.View c=g.getChildAt(i);
+                      if(c instanceof android.widget.TextView){
+                          CharSequence q=((android.widget.TextView)c).getText();
+                          if(q!=null&&"Riepilogo storico".equals(q.toString().trim())){
+                              historySection=true;
+                              break;
+                          }
+                      }
+                  }
+
+                  if(historySection){
+                      android.widget.TextView perf=findExactTextV3479(g,"Performance");
+                      if(perf!=null){
+                          perf.setOnClickListener(new android.view.View.OnClickListener(){
+                              @Override public void onClick(android.view.View view){
+                                  showHistoricalPerformanceV3479();
+                              }
+                          });
+                          perf.setEnabled(true);
+                          return true;
+                      }
+                  }
+
+                  for(int i=0;i<g.getChildCount();i++){
+                      if(wireHistoricalPerformanceButtonTreeV3479(g.getChildAt(i)))return true;
+                  }
+                  return false;
+              }
+
+              android.widget.TextView findExactTextV3479(android.view.View v,String wanted){
+                  if(v instanceof android.widget.TextView){
+                      android.widget.TextView t=(android.widget.TextView)v;
+                      CharSequence q=t.getText();
+                      if(q!=null&&wanted.equals(q.toString().trim()))return t;
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++){
+                          android.widget.TextView r=findExactTextV3479(g.getChildAt(i),wanted);
+                          if(r!=null)return r;
+                      }
+                  }
+                  return null;
+              }
+
+              void showHistoricalPerformanceV3479(){
+                  // Aggregate route: intentionally does NOT read or require a selected broker.
+                  heading("Performance storica","Tutti i portafogli");
+
+                  LinearLayout intro=card();
+                  intro.addView(sectionTitle("Performance storica"));
+                  intro.addView(muted(
+                      "Vista aggregata di tutti i portafogli. Non dipende dal broker aperto in precedenza.",
+                      12
+                  ));
+                  content.addView(intro);
+
+                  Cursor c=db.annualHistory();
+                  boolean any=false;
+                  try{
+                      while(c.moveToNext()){
+                          int yi=c.getColumnIndex("year");
+                          if(yi<0||c.isNull(yi))continue;
+                          int year=c.getInt(yi);
+
+                          Double gross=getNullable(c,"gross_income");
+                          Double overall=getNullable(c,"overall_result");
+                          if(overall==null)overall=getNullable(c,"portfolio_profit");
+                          Double rr=getNullable(c,"return_rate");
+
+                          LinearLayout box=card();
+                          box.addView(sectionTitle(String.valueOf(year)));
+
+                          StringBuilder sb=new StringBuilder();
+                          if(gross!=null){
+                              sb.append("Proventi: ").append(euro.format(gross)).append(" €");
+                          }
+                          if(overall!=null){
+                              if(sb.length()>0)sb.append("\n");
+                              sb.append("P/L: ")
+                                .append(overall>0?"+":"")
+                                .append(euro.format(overall)).append(" €");
+                          }
+                          if(rr!=null){
+                              if(sb.length()>0)sb.append("\n");
+                              sb.append("Rendimento: ").append(pct.format(rr));
+                          }
+
+                          if(sb.length()==0){
+                              box.addView(muted("Dati di performance non disponibili.",12));
+                          }else{
+                              TextView metrics=tv(sb.toString(),16,true);
+                              box.addView(metrics);
+                          }
+
+                          content.addView(box);
+                          any=true;
+                      }
+                  }finally{c.close();}
+
+                  if(!any){
+                      LinearLayout empty=card();
+                      empty.addView(muted("Nessun dato storico disponibile.",13));
+                      content.addView(empty);
+                  }
+
+                  scheduleUniversalSemanticColorsV3479();
+              }
+          '''
+
+          last=main.rfind('}')
+          if last<0:raise RuntimeError('MainActivity closing brace not found')
+          main=main[:last]+'\n'+helpers+'\n'+main[last:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          if db_path.read_bytes()!=db_before:
+              raise RuntimeError('DbHelper changed unexpectedly')
+
+          print('V3.4.79 applied: direct historical Performance + universal semantic colors for all portfolios')
+          PY3479
+
+      - name: Verify V3.4.79 navigation colors and all regressions
+        shell: bash
+        run: |
+          python3 - <<'PY3479CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+          compact=lambda x:re.sub(r'\s+','',x)
+
+          assert 'versionCode 137' in g
+          assert 'versionName "3.4.79-dev-performance-colors-all-portfolios"' in g
+          assert 'DEV 3.4.79 PERF COLORS ALL' in s
+          assert re.search(r'DB_VERSION\s*=\s*18',d)
+
+          # Broker-agnostic navigation and coloring.
+          for marker in [
+              'showHistoricalPerformanceV3479',
+              'wireHistoricalPerformanceButtonV3479',
+              'Tutti i portafogli',
+              'Non dipende dal broker aperto in precedenza',
+              'scheduleUniversalSemanticColorsV3479',
+              'applyUniversalSemanticColorsV3479',
+              'styleUniversalMetricTextV3479',
+              'semanticColorV3479',
+              'return android.graphics.Color.rgb(245,247,250); // zero stays white',
+          ]:
+              assert marker in s,marker
+
+          # Historical Performance must NOT depend on brokerFilter/current broker.
+          p=s.index('void showHistoricalPerformanceV3479()')
+          end=s.find('\n              }',p)
+          # Use a wider method slice up to next helper/class end region.
+          hist=s[p:p+9000]
+          assert 'brokerFilter()' not in hist
+          assert 'current' not in hist.split('heading("Performance storica","Tutti i portafogli")',1)[-1][:500]
+          assert 'db.annualHistory()' in hist
+
+          # Home directly rewires its own historical Performance button.
+          hm=re.search(r'\bvoid\s+showHome\s*\(\s*\)\s*\{',s); assert hm
+          # Enough window to include method ending in this source.
+          home=s[hm.start():hm.start()+35000]
+          assert 'wireHistoricalPerformanceButtonV3479();' in home
+
+          # Universal semantics cover required metrics for every screen/portfolio.
+          universal=s[s.index('void styleUniversalMetricTextV3479'):]
+          for token in [
+              'P/L','Guadagno/Perdita','Lordo','Netto','Proventi',
+              'Div.','Cedole','Rendimento','Risultato complessivo',
+              'Recupero fiscale','Perdita / minus'
+          ]:
+              assert token in universal,token
+
+          # Zero is white; positive green; negative red.
+          assert 'value>0.0000001' in s
+          assert 'value<-0.0000001' in s
+          assert 'Color.rgb(46,204,113)' in s
+          assert 'Color.rgb(255,82,82)' in s
+          assert 'Color.rgb(245,247,250)' in s
+
+          # V3478 FIX1 safe local Div./Cedole logic stays.
+          for marker in [
+              'stylePositionIncomeLabelV3478Fix1',
+              'isNearestPositionCardCertificateV3478Fix1',
+              'certificate?"Cedole":"Div."',
+              'applyUpdatePortfolioSemanticColorsV3478',
+          ]:
+              assert marker in s,marker
+
+          # Trade Republic price/data repairs remain exactly intact.
+          assert 'IE000OBK3UE0' in s
+          assert 'IE0000BK3UE0' not in s
+          assert 'repairTradeRepublicPricesV3477' in s
+          assert 'positions_block_tr_placeholder18_v3477' in s
+          assert 'positions_block_tr_placeholder14_fix_v3477' in s
+
+          # No portfolio financial data writes introduced by V3479.
+          p=s.index('// ===== V3.4.79:')
+          v=s[p:]
+          vc=compact(v)
+          assert 'cv.put("quantity"' not in v
+          assert 'cv.put("pmc"' not in v
+          assert 'UPDATEpositionsSETquantity=' not in vc
+          assert 'UPDATEpositionsSETpmc=' not in vc
+          assert 'UPDATEportfolio_status' not in v
+          assert 'INSERTINTOpositions' not in vc
+
+          # Critical historical and data integrity safeguards remain.
+          for marker in [
+              'applyHistoricalUiSafetyV3462',
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'V3474_FIX4_DIRECT_OPEN_POSITION_HOME_TOTAL',
+              'V3474_FIX2_NORMALIZED_BROKER_TOTALS',
+              'V3474_FIX3_POSITION_FIRST_HOME_TOTAL',
+              'V3473_POSITION_CARD_AMOUNT_COLORS',
+              'V3472_FIX4_FIX2_IMMEDIATE_VISUAL_SYNC',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+          ]:
+              assert marker in s or marker in d,marker
+
+          print('V3.4.79 verified: all portfolios use direct historical Performance and one semantic color policy')
+          PY3479CHECK
+
+      - name: Build signed V3.4.79 APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.79 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.79 signed APK verified"
+
+      - name: Upload signed V3.4.79 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3479-PERFORMANCE-COLORS-ALL-PORTFOLIOS-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
