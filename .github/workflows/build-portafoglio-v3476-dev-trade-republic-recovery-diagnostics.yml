@@ -1,0 +1,371 @@
+name: Build Portafoglio 2026 V3.4.76 DIAG Trade Republic Recovery Compare
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3476-dev-trade-republic-recovery-diagnostics.yml"
+      - ".github/workflows/build-portafoglio-v3475-dev-trade-republic-diagnostics.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-home-wealth-diagnostics-FIX5.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX3.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX2-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync.yml"
+      - ".github/workflows/build-portafoglio-v3473-dev-position-card-amount-colors-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3472-dev-position-functional-bar-dialog-ui-FIX4-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3471-dev-instrument-lifecycle-acc-div.yml"
+      - ".github/workflows/build-portafoglio-v3470-dev-accounting-rules-italian-ui-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact V3.4.75 TR DIAG source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3475-dev-trade-republic-diagnostics.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing V3.4.75 workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]; i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1; continue
+              name=line[len('      - name: '):].strip()
+              j=i+1; script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1; block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '): break
+                          if raw.startswith('          '):
+                              block.append(raw[10:]); k+=1; continue
+                          if raw.strip()=='':
+                              block.append(''); k+=1; continue
+                          if raw.startswith('        '): break
+                          block.append(raw); k+=1
+                      script='\n'.join(block)+'\n'; break
+                  j+=1
+              if script is not None: parsed.append((name,script))
+              i=j if j>i else i+1
+
+          start_name='Rebuild exact V3.4.74 FIX5 source'
+          end_name='Verify V3.4.75 Trade Republic diagnostics and regressions'
+          started=False; reached=False
+          for name,script in parsed:
+              if name==start_name: started=True
+              if not started: continue
+              print(f'===== REPLAY {name} =====')
+              subprocess.run(['bash','-euo','pipefail','-c',script],check=True,env=os.environ.copy())
+              if name==end_name:
+                  reached=True; break
+
+          if not started or not reached:
+              raise RuntimeError('Could not reconstruct exact V3.4.75 source')
+          print('V3.4.75 source reconstructed successfully')
+          PYREPLAY
+
+      - name: Patch V3.4.76 Trade Republic recovery diagnostics
+        shell: bash
+        run: |
+          python3 - <<'PY3476'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db=db_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          if 'versionCode 131' not in gradle:
+              raise RuntimeError('V3.4.75 versionCode missing')
+          if 'versionName "3.4.75-dev-trade-republic-diagnostics"' not in gradle:
+              raise RuntimeError('V3.4.75 versionName missing')
+          if 'DEV 3.4.75 TR DIAG' not in main:
+              raise RuntimeError('V3.4.75 visible label missing')
+          if 'tradeRepublicDiagnosticsV3475' not in db:
+              raise RuntimeError('V3.4.75 diagnostics missing')
+
+          gradle=gradle.replace('versionCode 131','versionCode 132',1)
+          gradle=gradle.replace(
+              'versionName "3.4.75-dev-trade-republic-diagnostics"',
+              'versionName "3.4.76-dev-trade-republic-recovery-diagnostics"',
+              1
+          )
+          main=main.replace('DEV 3.4.75 TR DIAG','DEV 3.4.76 TR RECOVERY DIAG')
+
+          helper=r'''
+              // V3476_TRADE_REPUBLIC_RECOVERY_DIAGNOSTICS
+              public String tradeRepublicRecoveryDiagnosticsV3476(){
+                  SQLiteDatabase r=getReadableDatabase();
+                  StringBuilder sb=new StringBuilder();
+
+                  // Current Trade Republic positions.
+                  Cursor cur=r.rawQuery(
+                      "SELECT COALESCE(isin,''),COALESCE(instrument,''),"+
+                      "COALESCE(quantity,0),COALESCE(pmc,0),COALESCE(price,0),"+
+                      "COALESCE(current_value,0),COALESCE(source_date,'') "+
+                      "FROM positions "+
+                      "WHERE lower(trim(COALESCE(broker,''))) LIKE '%trade%republic%' "+
+                      "ORDER BY instrument,isin",
+                      null
+                  );
+
+                  int n=0;
+                  while(cur.moveToNext()){
+                      n++;
+                      String isin=cur.getString(0);
+                      String instrument=cur.getString(1);
+                      double q=cur.getDouble(2);
+                      double pmc=cur.getDouble(3);
+                      double price=cur.getDouble(4);
+                      double current=cur.getDouble(5);
+                      String sourceDate=cur.getString(6);
+
+                      sb.append("[").append(n).append("] ")
+                        .append(isin.isEmpty()?"(ISIN vuoto)":isin)
+                        .append("\n").append(instrument)
+                        .append("\nATTUALE")
+                        .append("\nq.tà=").append(q)
+                        .append(" | PMC=").append(pmc)
+                        .append("\nprezzo=").append(price)
+                        .append(" | current_value=").append(current)
+                        .append("\nsource_date=").append(sourceDate);
+
+                      // Latest recovery row for same ISIN + Trade Republic.
+                      Cursor rec=r.rawQuery(
+                          "SELECT COALESCE(quantity,0),COALESCE(pmc,0),COALESCE(price,0),"+
+                          "COALESCE(current_value,0),COALESCE(source_date,''),COALESCE(captured_at,'') "+
+                          "FROM position_recovery_v3464 "+
+                          "WHERE isin=? AND lower(trim(COALESCE(broker,''))) LIKE '%trade%republic%' "+
+                          "ORDER BY captured_at DESC LIMIT 1",
+                          new String[]{isin}
+                      );
+
+                      if(rec.moveToFirst()){
+                          sb.append("\nRECOVERY V3464")
+                            .append("\nq.tà=").append(rec.getDouble(0))
+                            .append(" | PMC=").append(rec.getDouble(1))
+                            .append("\nprezzo=").append(rec.getDouble(2))
+                            .append(" | current_value=").append(rec.getDouble(3))
+                            .append("\nsource_date=").append(rec.getString(4))
+                            .append(" | captured_at=").append(rec.getString(5));
+                      }else{
+                          sb.append("\nRECOVERY V3464: nessun record");
+                      }
+                      rec.close();
+
+                      // Count all recovery rows for this ISIN, useful to detect older quantities.
+                      Cursor cnt=r.rawQuery(
+                          "SELECT COUNT(*) FROM position_recovery_v3464 "+
+                          "WHERE isin=? AND lower(trim(COALESCE(broker,''))) LIKE '%trade%republic%'",
+                          new String[]{isin}
+                      );
+                      int recoveryCount=0;
+                      if(cnt.moveToFirst())recoveryCount=cnt.getInt(0);
+                      cnt.close();
+                      sb.append("\nRecovery rows totali=").append(recoveryCount);
+
+                      // Max historical quantity and latest timestamp from recovery table.
+                      Cursor mx=r.rawQuery(
+                          "SELECT COALESCE(MAX(quantity),0),COALESCE(MAX(current_value),0),"+
+                          "COALESCE(MAX(captured_at),'') "+
+                          "FROM position_recovery_v3464 "+
+                          "WHERE isin=? AND lower(trim(COALESCE(broker,''))) LIKE '%trade%republic%'",
+                          new String[]{isin}
+                      );
+                      if(mx.moveToFirst()){
+                          sb.append("\nMAX recovery q.tà=").append(mx.getDouble(0))
+                            .append(" | MAX current_value=").append(mx.getDouble(1))
+                            .append("\nUltimo captured_at=").append(mx.getString(2));
+                      }
+                      mx.close();
+
+                      sb.append("\n\n");
+                  }
+                  cur.close();
+
+                  sb.insert(0,
+                      "Confronto ATTUALE vs RECOVERY Trade Republic\n"+
+                      "Posizioni attuali: "+n+"\n\n"
+                  );
+
+                  return sb.toString();
+              }
+          '''
+
+          last=db.rfind('}')
+          if last<0:
+              raise RuntimeError('DbHelper closing brace missing')
+          db=db[:last]+'\n'+helper+'\n'+db[last:]
+
+          anchor='        addPortfolioCompositionCard(null,totalValue,cash);'
+          if anchor not in main:
+              raise RuntimeError('Home composition anchor missing')
+
+          ui=r'''
+                  LinearLayout trRecoveryDiag=card();
+                  trRecoveryDiag.addView(sectionTitle("Recovery Trade Republic • V3.4.76"));
+                  trRecoveryDiag.addView(muted(
+                      "Confronto diagnostico: dati attuali contro i backup position_recovery_v3464. Nessun dato viene modificato.",
+                      11
+                  ));
+                  trRecoveryDiag.addView(financeText(
+                      db.tradeRepublicRecoveryDiagnosticsV3476(),
+                      11,
+                      C_TEXT,
+                      true
+                  ));
+                  content.addView(trRecoveryDiag);
+          '''
+          main=main.replace(anchor,ui+'\n'+anchor,1)
+
+          main_path.write_text(main,encoding='utf-8')
+          db_path.write_text(db,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          print('V3.4.76 Trade Republic recovery diagnostics applied')
+          PY3476
+
+      - name: Verify V3.4.76 recovery diagnostics and regressions
+        shell: bash
+        run: |
+          python3 - <<'PY3476CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+
+          assert 'versionCode 132' in g
+          assert 'versionName "3.4.76-dev-trade-republic-recovery-diagnostics"' in g
+          assert 'DEV 3.4.76 TR RECOVERY DIAG' in s
+          assert re.search(r'DB_VERSION\s*=\s*18',d)
+
+          assert 'V3476_TRADE_REPUBLIC_RECOVERY_DIAGNOSTICS' in d
+          assert 'tradeRepublicRecoveryDiagnosticsV3476' in d
+          assert 'position_recovery_v3464' in d
+          assert 'Recovery rows totali=' in d
+          assert 'MAX recovery q.tà=' in d
+          assert 'Confronto ATTUALE vs RECOVERY Trade Republic' in d
+          assert 'Recovery Trade Republic • V3.4.76' in s
+          assert 'db.tradeRepublicRecoveryDiagnosticsV3476()' in s
+
+          # Diagnostic-only: do not mutate quantity/PMC or recovery table.
+          method=d[d.index('V3476_TRADE_REPUBLIC_RECOVERY_DIAGNOSTICS'):]
+          assert 'UPDATE positions' not in method
+          assert 'DELETE FROM positions' not in method
+          assert 'INSERT INTO position_recovery_v3464' not in method
+
+          # Preserve current Home total and all prior diagnostics/safety.
+          assert 'homeOpenPositionsTotalV3474Fix4' in d
+          assert 'tradeRepublicDiagnosticsV3475' in d
+          assert 'homeWealthDiagnosticsV3474Fix5' in d
+
+          for marker in [
+              'V3474_FIX4_DIRECT_OPEN_POSITION_HOME_TOTAL',
+              'V3474_FIX2_NORMALIZED_BROKER_TOTALS',
+              'V3474_FIX3_POSITION_FIRST_HOME_TOTAL',
+              'V3473_POSITION_CARD_AMOUNT_COLORS',
+              'V3472_FIX4_FIX2_IMMEDIATE_VISUAL_SYNC',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'applyHistoricalUiSafetyV3462',
+          ]:
+              assert marker in s or marker in d, marker
+
+          print('V3.4.76 verified: recovery diagnostics only; quantities/PMC untouched; DB18 and safety intact')
+          PY3476CHECK
+
+      - name: Build signed V3.4.76 Trade Republic recovery diagnostic APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.76 recovery diagnostic APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.76 recovery diagnostic APK verified"
+
+      - name: Upload signed V3.4.76 recovery diagnostic APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3476-TRADE-REPUBLIC-RECOVERY-DIAGNOSTICS-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
