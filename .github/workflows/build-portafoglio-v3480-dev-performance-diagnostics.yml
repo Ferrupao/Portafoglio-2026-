@@ -1,0 +1,491 @@
+name: Build Portafoglio 2026 V3.4.80 Performance Diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3480-dev-performance-diagnostics.yml"
+      - ".github/workflows/build-portafoglio-v3478-dev-ui-consistency-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3478-dev-ui-consistency.yml"
+      - ".github/workflows/build-portafoglio-v3477-dev-trade-republic-price-fix-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3477-dev-trade-republic-price-fix.yml"
+      - ".github/workflows/build-portafoglio-v3476-dev-trade-republic-recovery-diagnostics.yml"
+      - ".github/workflows/build-portafoglio-v3475-dev-trade-republic-diagnostics.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-home-wealth-diagnostics-FIX5.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX3.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX2-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync.yml"
+      - ".github/workflows/build-portafoglio-v3473-dev-position-card-amount-colors-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3472-dev-position-functional-bar-dialog-ui-FIX4-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3471-dev-instrument-lifecycle-acc-div.yml"
+      - ".github/workflows/build-portafoglio-v3470-dev-accounting-rules-italian-ui-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact V3.4.78 FIX1 stable source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3478-dev-ui-consistency-FIX1.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing V3.4.78 FIX1 workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]; i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1; continue
+              name=line[len('      - name: '):].strip()
+              j=i+1; script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1; block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '): break
+                          if raw.startswith('          '):
+                              block.append(raw[10:]); k+=1; continue
+                          if raw.strip()=='':
+                              block.append(''); k+=1; continue
+                          if raw.startswith('        '): break
+                          block.append(raw); k+=1
+                      script='\n'.join(block)+'\n'; break
+                  j+=1
+              if script is not None: parsed.append((name,script))
+              i=j if j>i else i+1
+
+          start_name='Rebuild exact V3.4.78 source'
+          end_name='Verify V3.4.78 FIX1 stability and UI rules'
+          started=False; reached=False
+          for name,script in parsed:
+              if name==start_name: started=True
+              if not started: continue
+              print(f'===== REPLAY {name} =====')
+              subprocess.run(['bash','-euo','pipefail','-c',script],check=True,env=os.environ.copy())
+              if name==end_name:
+                  reached=True
+                  break
+
+          if not started or not reached:
+              raise RuntimeError('Could not reconstruct exact V3.4.78 FIX1 source')
+          print('V3.4.78 FIX1 stable source reconstructed successfully')
+          PYREPLAY
+
+      - name: Patch V3.4.80 Performance diagnostics
+        shell: bash
+        run: |
+          python3 - <<'PY3480'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          if 'versionCode 136' not in gradle:
+              raise RuntimeError('Expected V3.4.78 FIX1 versionCode 136')
+          if 'versionName "3.4.78-dev-ui-consistency-fix1"' not in gradle:
+              raise RuntimeError('Expected V3.4.78 FIX1 versionName')
+          if 'DEV 3.4.78 FIX1' not in main:
+              raise RuntimeError('Expected V3.4.78 FIX1 label')
+
+          # versionCode must be > V3.4.79 (137) so it installs as an update.
+          gradle=gradle.replace('versionCode 136','versionCode 138',1)
+          gradle=gradle.replace(
+              'versionName "3.4.78-dev-ui-consistency-fix1"',
+              'versionName "3.4.80-dev-performance-diagnostics"',
+              1
+          )
+          main=main.replace('DEV 3.4.78 FIX1','DEV 3.4.80 PERF DIAG')
+
+          def matching_brace(t,o):
+              d=0;i=o;ins=inc=lin=blk=False;esc=False
+              while i<len(t):
+                  c=t[i]; n=t[i+1] if i+1<len(t) else ''
+                  if lin:
+                      if c=='\n':lin=False
+                      i+=1;continue
+                  if blk:
+                      if c=='*' and n=='/':blk=False;i+=2;continue
+                      i+=1;continue
+                  if ins:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='"':ins=False
+                      i+=1;continue
+                  if inc:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":inc=False
+                      i+=1;continue
+                  if c=='/' and n=='/':lin=True;i+=2;continue
+                  if c=='/' and n=='*':blk=True;i+=2;continue
+                  if c=='"':ins=True;i+=1;continue
+                  if c=="'":inc=True;i+=1;continue
+                  if c=='{':d+=1
+                  elif c=='}':
+                      d-=1
+                      if d==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          # Install crash collector as early as possible in onCreate.
+          m=re.search(r'(?m)^\s*(?:public|protected|private)?\s*void\s+onCreate\s*\([^)]*\)\s*\{',main)
+          if not m:
+              raise RuntimeError('onCreate method not found')
+          o=main.find('{',m.start()); c=matching_brace(main,o)
+          body=main[m.start():c+1]
+          if 'installPerformanceCrashDiagnosticsV3480();' not in body:
+              body=body[:body.find('{')+1] + '''
+                  installPerformanceCrashDiagnosticsV3480();
+              ''' + body[body.find('{')+1:]
+          main=main[:m.start()]+body+main[c+1:]
+
+          # heading() gives us the exact screen context. Record only Performance screens.
+          hm=re.search(r'\bvoid\s+heading\s*\([^)]*\)\s*\{',main)
+          if not hm:
+              raise RuntimeError('heading(...) not found')
+          ho=main.find('{',hm.start()); hc=matching_brace(main,ho)
+          hbody=main[hm.start():hc+1]
+
+          # Infer first two parameter names robustly.
+          sig=main[hm.start():ho]
+          params=sig[sig.find('(')+1:sig.rfind(')')]
+          names=[]
+          for p in params.split(','):
+              p=p.strip()
+              if not p: continue
+              names.append(p.split()[-1].replace('[]',''))
+          title_name=names[0] if names else 'title'
+          sub_name=names[1] if len(names)>1 else 'subtitle'
+
+          hook=f'''
+                  recordPerformanceScreenV3480({title_name},{sub_name});
+          '''
+          if 'recordPerformanceScreenV3480(' not in hbody:
+              hbody=hbody[:hbody.find('{')+1]+hook+hbody[hbody.find('{')+1:]
+          main=main[:hm.start()]+hbody+main[hc+1:]
+
+          # Home shows the persisted crash report after relaunch.
+          sm=re.search(r'\bvoid\s+showHome\s*\(\s*\)\s*\{',main)
+          if not sm:
+              raise RuntimeError('showHome() not found')
+          so=main.find('{',sm.start()); sc=matching_brace(main,so)
+          sbody=main[sm.start():sc+1]
+          if 'showPerformanceCrashDiagnosticCardV3480();' not in sbody:
+              sbody=sbody[:-1]+'''
+                  showPerformanceCrashDiagnosticCardV3480();
+              }'''
+          main=main[:sm.start()]+sbody+main[sc+1:]
+
+          helpers=r'''
+              // ===== V3.4.80 PERFORMANCE DIAGNOSTICS =====
+
+              static final String PERF_DIAG_PREFS_V3480="performance_diag_v3480";
+              static final String PERF_DIAG_CRASH_V3480="last_crash";
+              static final String PERF_DIAG_CONTEXT_V3480="last_context";
+              static final String PERF_DIAG_TIME_V3480="last_time";
+
+              void installPerformanceCrashDiagnosticsV3480(){
+                  final java.lang.Thread.UncaughtExceptionHandler previous=
+                      java.lang.Thread.getDefaultUncaughtExceptionHandler();
+
+                  java.lang.Thread.setDefaultUncaughtExceptionHandler(
+                      new java.lang.Thread.UncaughtExceptionHandler(){
+                          @Override public void uncaughtException(
+                              java.lang.Thread thread,Throwable error
+                          ){
+                              try{
+                                  android.content.SharedPreferences p=
+                                      getSharedPreferences(
+                                          PERF_DIAG_PREFS_V3480,
+                                          android.content.Context.MODE_PRIVATE
+                                      );
+
+                                  String context=p.getString(
+                                      PERF_DIAG_CONTEXT_V3480,
+                                      "Schermata non registrata"
+                                  );
+
+                                  java.io.StringWriter sw=new java.io.StringWriter();
+                                  java.io.PrintWriter pw=new java.io.PrintWriter(sw);
+                                  error.printStackTrace(pw);
+                                  pw.flush();
+
+                                  String stack=sw.toString();
+                                  if(stack.length()>12000)
+                                      stack=stack.substring(0,12000);
+
+                                  String when=new java.text.SimpleDateFormat(
+                                      "dd/MM/yyyy HH:mm:ss",
+                                      java.util.Locale.ITALY
+                                  ).format(new java.util.Date());
+
+                                  String report=
+                                      "Versione: DEV 3.4.80 PERF DIAG\n"+
+                                      "Contesto: "+context+"\n"+
+                                      "Thread: "+(thread==null?"?":thread.getName())+"\n"+
+                                      "Eccezione: "+error.getClass().getName()+"\n"+
+                                      "Messaggio: "+String.valueOf(error.getMessage())+"\n\n"+
+                                      stack;
+
+                                  p.edit()
+                                      .putString(PERF_DIAG_CRASH_V3480,report)
+                                      .putString(PERF_DIAG_TIME_V3480,when)
+                                      .commit();
+                              }catch(Throwable ignored){}
+
+                              if(previous!=null){
+                                  previous.uncaughtException(thread,error);
+                              }else{
+                                  android.os.Process.killProcess(android.os.Process.myPid());
+                                  java.lang.System.exit(10);
+                              }
+                          }
+                      }
+                  );
+              }
+
+              void recordPerformanceScreenV3480(String title,String subtitle){
+                  String t=title==null?"":title;
+                  if(!t.toLowerCase(java.util.Locale.ROOT).contains("performance"))return;
+
+                  String s=subtitle==null?"":subtitle;
+                  String context="Titolo="+t+" | Sottotitolo="+s;
+
+                  getSharedPreferences(
+                      PERF_DIAG_PREFS_V3480,
+                      android.content.Context.MODE_PRIVATE
+                  ).edit()
+                   .putString(PERF_DIAG_CONTEXT_V3480,context)
+                   .apply();
+              }
+
+              void clearPerformanceCrashDiagnosticV3480(){
+                  getSharedPreferences(
+                      PERF_DIAG_PREFS_V3480,
+                      android.content.Context.MODE_PRIVATE
+                  ).edit()
+                   .remove(PERF_DIAG_CRASH_V3480)
+                   .remove(PERF_DIAG_TIME_V3480)
+                   .apply();
+              }
+
+              void showPerformanceCrashDiagnosticCardV3480(){
+                  if(content==null)return;
+
+                  android.content.SharedPreferences p=getSharedPreferences(
+                      PERF_DIAG_PREFS_V3480,
+                      android.content.Context.MODE_PRIVATE
+                  );
+                  String report=p.getString(PERF_DIAG_CRASH_V3480,"");
+                  if(report==null||report.trim().isEmpty())return;
+
+                  String when=p.getString(PERF_DIAG_TIME_V3480,"");
+
+                  LinearLayout box=card();
+                  box.addView(sectionTitle("Diagnostica crash Performance"));
+                  box.addView(muted(
+                      "Crash registrato"+(when==null||when.isEmpty()?"":" • "+when)+
+                      ". Fai uno screenshot di questa scheda.",
+                      12
+                  ));
+
+                  TextView details=tv(report,12,true);
+                  details.setTextIsSelectable(true);
+                  box.addView(details);
+
+                  Button clear=ghostBtn("Cancella diagnostica");
+                  clear.setOnClickListener(v->{
+                      clearPerformanceCrashDiagnosticV3480();
+                      toast("Diagnostica cancellata");
+                      showHome();
+                  });
+                  box.addView(clear);
+
+                  content.addView(box);
+              }
+          '''
+
+          last=main.rfind('}')
+          if last<0:
+              raise RuntimeError('MainActivity closing brace not found')
+          main=main[:last]+'\n'+helpers+'\n'+main[last:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          if db_path.read_bytes()!=db_before:
+              raise RuntimeError('DbHelper changed unexpectedly')
+
+          print('V3.4.80 performance crash diagnostics applied')
+          PY3480
+
+      - name: Verify V3.4.80 diagnostics and safety
+        shell: bash
+        run: |
+          python3 - <<'PY3480CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+          compact=lambda x:re.sub(r'\s+','',x)
+
+          assert 'versionCode 138' in g
+          assert 'versionName "3.4.80-dev-performance-diagnostics"' in g
+          assert 'DEV 3.4.80 PERF DIAG' in s
+          assert re.search(r'DB_VERSION\s*=\s*18',d)
+
+          # Diagnostics must be installed on app launch.
+          assert 'installPerformanceCrashDiagnosticsV3480();' in s
+          assert 'Thread.setDefaultUncaughtExceptionHandler' in s
+          assert 'error.printStackTrace(pw);' in s
+          assert 'previous.uncaughtException(thread,error);' in s
+
+          # Performance context is recorded from the common heading path,
+          # therefore it applies to Directa, Trade Republic and future portfolios.
+          assert 'recordPerformanceScreenV3480' in s
+          assert 'contains("performance")' in s
+
+          # Home exposes crash details after relaunch.
+          assert 'showPerformanceCrashDiagnosticCardV3480();' in s
+          assert 'Diagnostica crash Performance' in s
+          assert 'Fai uno screenshot di questa scheda.' in s
+          assert 'setTextIsSelectable(true)' in s
+
+          # Diagnostic code must not write portfolio data.
+          p=s.index('// ===== V3.4.80 PERFORMANCE DIAGNOSTICS =====')
+          diag=s[p:]
+          dc=compact(diag)
+          for forbidden in [
+              'UPDATEpositions',
+              'UPDATEportfolio_status',
+              'INSERTINTOpositions',
+              'DELETEFROMpositions',
+              'cv.put("quantity"',
+              'cv.put("pmc"',
+              'cv.put("price"',
+          ]:
+              assert forbidden not in dc,forbidden
+
+          # Stable V3.4.78 FIX1 functionality remains.
+          for marker in [
+              'stylePositionIncomeLabelV3478Fix1',
+              'isNearestPositionCardCertificateV3478Fix1',
+              'applyUpdatePortfolioSemanticColorsV3478',
+              'stylePositionCardAmountTextV3473',
+              'repairTradeRepublicPricesV3477',
+              'IE000OBK3UE0',
+          ]:
+              assert marker in s,marker
+
+          # Critical data integrity protections remain.
+          for marker in [
+              'applyHistoricalUiSafetyV3462',
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'V3474_FIX4_DIRECT_OPEN_POSITION_HOME_TOTAL',
+              'V3474_FIX2_NORMALIZED_BROKER_TOTALS',
+              'V3474_FIX3_POSITION_FIRST_HOME_TOTAL',
+              'V3473_POSITION_CARD_AMOUNT_COLORS',
+              'V3472_FIX4_FIX2_IMMEDIATE_VISUAL_SYNC',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+          ]:
+              assert marker in s or marker in d,marker
+
+          print('V3.4.80 verified: crash diagnostics only; financial data untouched')
+          PY3480CHECK
+
+      - name: Build signed V3.4.80 diagnostics APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.80 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.80 diagnostics signed APK verified"
+
+      - name: Upload signed V3.4.80 diagnostics APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3480-PERFORMANCE-DIAGNOSTICS-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
