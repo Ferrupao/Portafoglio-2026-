@@ -1,0 +1,481 @@
+name: Build Portafoglio 2026 V3.4.77 FIX Trade Republic Prices
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3477-dev-trade-republic-price-fix.yml"
+      - ".github/workflows/build-portafoglio-v3476-dev-trade-republic-recovery-diagnostics.yml"
+      - ".github/workflows/build-portafoglio-v3475-dev-trade-republic-diagnostics.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-home-wealth-diagnostics-FIX5.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX3.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX2-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync.yml"
+      - ".github/workflows/build-portafoglio-v3473-dev-position-card-amount-colors-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3472-dev-position-functional-bar-dialog-ui-FIX4-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3471-dev-instrument-lifecycle-acc-div.yml"
+      - ".github/workflows/build-portafoglio-v3470-dev-accounting-rules-italian-ui-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact V3.4.76 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3476-dev-trade-republic-recovery-diagnostics.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing V3.4.76 workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]; i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1; continue
+              name=line[len('      - name: '):].strip()
+              j=i+1; script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1; block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '): break
+                          if raw.startswith('          '):
+                              block.append(raw[10:]); k+=1; continue
+                          if raw.strip()=='':
+                              block.append(''); k+=1; continue
+                          if raw.startswith('        '): break
+                          block.append(raw); k+=1
+                      script='\n'.join(block)+'\n'; break
+                  j+=1
+              if script is not None: parsed.append((name,script))
+              i=j if j>i else i+1
+
+          start_name='Rebuild exact V3.4.75 TR DIAG source'
+          end_name='Verify V3.4.76 recovery diagnostics and regressions'
+          started=False; reached=False
+          for name,script in parsed:
+              if name==start_name: started=True
+              if not started: continue
+              print(f'===== REPLAY {name} =====')
+              subprocess.run(['bash','-euo','pipefail','-c',script],check=True,env=os.environ.copy())
+              if name==end_name:
+                  reached=True
+                  break
+
+          if not started or not reached:
+              raise RuntimeError('Could not reconstruct exact V3.4.76 source')
+          print('V3.4.76 source reconstructed successfully')
+          PYREPLAY
+
+      - name: Patch V3.4.77 Trade Republic prices
+        shell: bash
+        run: |
+          python3 - <<'PY3477'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          if 'versionCode 132' not in gradle:
+              raise RuntimeError('V3.4.76 versionCode missing')
+          if 'versionName "3.4.76-dev-trade-republic-recovery-diagnostics"' not in gradle:
+              raise RuntimeError('V3.4.76 versionName missing')
+          if 'DEV 3.4.76 TR RECOVERY DIAG' not in main:
+              raise RuntimeError('V3.4.76 visible label missing')
+
+          gradle=gradle.replace('versionCode 132','versionCode 133',1)
+          gradle=gradle.replace(
+              'versionName "3.4.76-dev-trade-republic-recovery-diagnostics"',
+              'versionName "3.4.77-dev-trade-republic-price-fix"',
+              1
+          )
+          main=main.replace(
+              'DEV 3.4.76 TR RECOVERY DIAG',
+              'DEV 3.4.77 TR PRICE FIX'
+          )
+
+          # Remove temporary diagnostic cards from Home. The helper methods may
+          # remain in source but are no longer rendered.
+          blocks=[
+          r'''
+                  LinearLayout diagCard=card();
+                  diagCard.addView(sectionTitle("Diagnostica patrimonio • FIX5"));
+                  diagCard.addView(muted(
+                      "Schermata temporanea: legge direttamente i dati salvati nel database del telefono.",
+                      11
+                  ));
+                  diagCard.addView(financeText(
+                      db.homeWealthDiagnosticsV3474Fix5(),
+                      12,
+                      C_TEXT,
+                      true
+                  ));
+                  content.addView(diagCard);
+          ''',
+          r'''
+                  LinearLayout trDiag=card();
+                  trDiag.addView(sectionTitle("Diagnostica Trade Republic • V3.4.75"));
+                  trDiag.addView(muted(
+                      "Dettaglio temporaneo delle posizioni Trade Republic salvate nel database.",
+                      11
+                  ));
+                  trDiag.addView(financeText(
+                      db.tradeRepublicDiagnosticsV3475(),
+                      11,
+                      C_TEXT,
+                      true
+                  ));
+                  content.addView(trDiag);
+          ''',
+          r'''
+                  LinearLayout trRecoveryDiag=card();
+                  trRecoveryDiag.addView(sectionTitle("Recovery Trade Republic • V3.4.76"));
+                  trRecoveryDiag.addView(muted(
+                      "Confronto diagnostico: dati attuali contro i backup position_recovery_v3464. Nessun dato viene modificato.",
+                      11
+                  ));
+                  trRecoveryDiag.addView(financeText(
+                      db.tradeRepublicRecoveryDiagnosticsV3476(),
+                      11,
+                      C_TEXT,
+                      true
+                  ));
+                  content.addView(trRecoveryDiag);
+          '''
+          ]
+          removed=0
+          for block in blocks:
+              if block in main:
+                  main=main.replace(block,'',1)
+                  removed+=1
+          if removed != 3:
+              raise RuntimeError(f'Expected to remove 3 diagnostic UI blocks, removed {removed}')
+
+          # Insert the new repair immediately after the existing V3464 repair
+          # and before normalization, on both Home and Dashboard.
+          needle='repairTradeRepublicPlaceholderPricesV3464();'
+          if main.count(needle)<2:
+              raise RuntimeError('Expected V3464 repair call in Home and Dashboard')
+          main=main.replace(
+              needle,
+              needle+'\n        repairTradeRepublicPricesV3477();',
+              2
+          )
+
+          helpers=r'''
+              // V3.4.77 - Trade Republic price repair from user-verified
+              // Trade Republic portfolio snapshot dated 19/09/2026.
+              // IMPORTANT: quantity and PMC are NEVER modified.
+              void repairTradeRepublicPricesV3477(){
+                  android.database.sqlite.SQLiteDatabase w=db.getWritableDatabase();
+
+                  // Correct the historical typo too: IE0000BK3UE0 uses ZERO, not letter O.
+                  String[] isin={
+                      "IE000U9J8HX9", // Nasdaq Equity Premium Income
+                      "IE0000BK3UE0", // REX Tech Innovation Income & Growth
+                      "IE000KJPDY61", // World Equity High Income
+                      "IE000HF69TA9", // REX Tech Innovation Premium Income
+                      "IE00064TWYK9", // Europe Equity Premium Income
+                      "IE0008BA4TY1", // REX Crypto Equity Income & Growth
+                      "IT0000072618"  // Intesa Sanpaolo
+                  };
+
+                  // Unit prices derived from the exact total values visible
+                  // in the user's Trade Republic snapshot on 19/09/2026:
+                  // 450.75, 135.12, 99.23, 31.07, 19.48, 10.07, 6.68 EUR.
+                  double[] oldPrice={
+                      18.0,18.0,5.143915,18.0,18.0,18.0,6.668
+                  };
+                  double[] fixedPrice={
+                      24.001472196790456,
+                      24.711949961593326,
+                      5.019971879456123,
+                      20.01925250288981,
+                      25.265888456549934,
+                      26.561020449611874,
+                      6.68
+                  };
+
+                  for(int i=0;i<isin.length;i++){
+                      android.database.Cursor c=w.rawQuery(
+                          "SELECT quantity,price FROM positions "+
+                          "WHERE lower(trim(COALESCE(broker,''))) LIKE '%trade%republic%' "+
+                          "AND isin=? AND COALESCE(quantity,0)>0 LIMIT 1",
+                          new String[]{isin[i]}
+                      );
+
+                      boolean repair=false;
+                      if(c.moveToFirst()){
+                          double p=c.isNull(1)?0:c.getDouble(1);
+                          repair=Math.abs(p-oldPrice[i])<0.0001;
+                      }
+                      c.close();
+
+                      if(repair){
+                          android.content.ContentValues cv=new android.content.ContentValues();
+                          cv.put("price",fixedPrice[i]);
+                          cv.put("source_date","19/09/2026");
+
+                          int changed=w.update(
+                              "positions",cv,
+                              "lower(trim(COALESCE(broker,''))) LIKE ? AND isin=? "+
+                              "AND COALESCE(quantity,0)>0",
+                              new String[]{"%trade%republic%",isin[i]}
+                          );
+
+                          if(changed>0){
+                              w.execSQL(
+                                  "UPDATE positions SET current_value=quantity*price "+
+                                  "WHERE lower(trim(COALESCE(broker,''))) LIKE '%trade%republic%' "+
+                                  "AND isin=? AND COALESCE(quantity,0)>0",
+                                  new Object[]{isin[i]}
+                              );
+                          }
+                      }
+                  }
+
+                  // Extra safeguards against the two known placeholder regressions.
+                  // They block only an exact placeholder after a valid price exists.
+                  w.execSQL(
+                      "CREATE TRIGGER IF NOT EXISTS positions_block_tr_placeholder18_v3477 "+
+                      "BEFORE UPDATE OF price,current_value ON positions "+
+                      "WHEN lower(COALESCE(OLD.broker,'')) LIKE '%trade%republic%' "+
+                      "AND OLD.isin IN ("+
+                      "'IE0008BA4TY1','IE000HF69TA9','IE000U9J8HX9','IE0000BK3UE0','IE00064TWYK9'"+
+                      ") "+
+                      "AND COALESCE(OLD.price,0)>0 "+
+                      "AND ABS(COALESCE(OLD.price,0)-18.0)>0.0001 "+
+                      "AND ("+
+                      "ABS(COALESCE(NEW.price,0)-18.0)<0.0001 "+
+                      "OR (COALESCE(NEW.quantity,0)>0 AND "+
+                      "ABS(COALESCE(NEW.current_value,0)/NEW.quantity-18.0)<0.0001)"+
+                      ") "+
+                      "BEGIN SELECT RAISE(IGNORE); END"
+                  );
+
+                  w.execSQL(
+                      "CREATE TRIGGER IF NOT EXISTS positions_block_tr_placeholder14_fix_v3477 "+
+                      "BEFORE UPDATE OF price,current_value ON positions "+
+                      "WHEN lower(COALESCE(OLD.broker,'')) LIKE '%trade%republic%' "+
+                      "AND OLD.isin IN ("+
+                      "'IE0008BA4TY1','IE000HF69TA9','IE000U9J8HX9','IE0000BK3UE0','IE00064TWYK9'"+
+                      ") "+
+                      "AND COALESCE(OLD.price,0)>0 "+
+                      "AND ABS(COALESCE(OLD.price,0)-14.0)>0.0001 "+
+                      "AND ("+
+                      "ABS(COALESCE(NEW.price,0)-14.0)<0.0001 "+
+                      "OR (COALESCE(NEW.quantity,0)>0 AND "+
+                      "ABS(COALESCE(NEW.current_value,0)/NEW.quantity-14.0)<0.0001)"+
+                      ") "+
+                      "BEGIN SELECT RAISE(IGNORE); END"
+                  );
+              }
+          '''
+
+          last=main.rfind('}')
+          if last<0:
+              raise RuntimeError('MainActivity closing brace missing')
+          main=main[:last]+'\n'+helpers+'\n'+main[last:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          if db_path.read_bytes()!=db_before:
+              raise RuntimeError('DbHelper changed unexpectedly')
+
+          print('V3.4.77 applied: Trade Republic prices repaired; quantity/PMC untouched')
+          PY3477
+
+      - name: Verify V3.4.77 Trade Republic price fix and safety
+        shell: bash
+        run: |
+          python3 - <<'PY3477CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+          compact=lambda x:re.sub(r'\s+','',x)
+
+          assert 'versionCode 133' in g
+          assert 'versionName "3.4.77-dev-trade-republic-price-fix"' in g
+          assert 'DEV 3.4.77 TR PRICE FIX' in s
+          assert re.search(r'DB_VERSION\s*=\s*18',d)
+
+          # Temporary diagnostics are no longer rendered.
+          assert 'sectionTitle("Diagnostica patrimonio • FIX5")' not in s
+          assert 'sectionTitle("Diagnostica Trade Republic • V3.4.75")' not in s
+          assert 'sectionTitle("Recovery Trade Republic • V3.4.76")' not in s
+
+          # Exact V3.4.77 repair markers.
+          for marker in [
+              'repairTradeRepublicPricesV3477',
+              'IE0000BK3UE0',
+              '24.001472196790456',
+              '24.711949961593326',
+              '5.019971879456123',
+              '20.01925250288981',
+              '25.265888456549934',
+              '26.561020449611874',
+              'positions_block_tr_placeholder18_v3477',
+              'positions_block_tr_placeholder14_fix_v3477',
+              'cv.put("source_date","19/09/2026")',
+              'UPDATE positions SET current_value=quantity*price',
+          ]:
+              assert marker in s, marker
+
+          # Repair must be called before live normalization in Home and Dashboard.
+          assert s.count('repairTradeRepublicPricesV3477();')>=2
+          for method_name in ['void showHome()','void showDashboard()']:
+              p=s.find(method_name); assert p>=0
+              window=s[p:p+2200]
+              a=window.find('repairTradeRepublicPricesV3477();')
+              b=window.find('normalizeLiveCashAllPortfoliosV3464();')
+              assert a>=0 and b>=0 and a<b, method_name
+
+          # Critical rule: never change quantity or PMC in V3477 method.
+          p=s.index('void repairTradeRepublicPricesV3477()')
+          nxt=s.find('\n              void ',p+10)
+          method=s[p:nxt if nxt>0 else len(s)]
+          mc=compact(method)
+          assert 'cv.put("quantity"' not in method
+          assert 'cv.put("pmc"' not in method
+          assert 'SETquantity=' not in mc
+          assert 'SETpmc=' not in mc
+
+          # Snapshot arithmetic: seven values total 752.40 EUR.
+          totals=[450.75,135.12,99.23,31.07,19.48,10.07,6.68]
+          assert abs(sum(totals)-752.40)<0.000001
+
+          # Quantities and derived prices reproduce the snapshot values.
+          q=[
+              18.780098,5.4678,19.767043,1.552006,0.771,0.379127,1.0
+          ]
+          px=[
+              24.001472196790456,24.711949961593326,5.019971879456123,
+              20.01925250288981,25.265888456549934,26.561020449611874,6.68
+          ]
+          expected=[450.75,135.12,99.23,31.07,19.48,10.07,6.68]
+          for qty,price,target in zip(q,px,expected):
+              assert abs(qty*price-target)<0.00001
+
+          # Preserve current Home calculation and all prior data-integrity protections.
+          assert 'homeOpenPositionsTotalV3474Fix4' in d
+          for marker in [
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'V3474_FIX4_DIRECT_OPEN_POSITION_HOME_TOTAL',
+              'V3474_FIX2_NORMALIZED_BROKER_TOTALS',
+              'V3474_FIX3_POSITION_FIRST_HOME_TOTAL',
+              'V3473_POSITION_CARD_AMOUNT_COLORS',
+              'V3472_FIX4_FIX2_IMMEDIATE_VISUAL_SYNC',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+              'applyHistoricalUiSafetyV3462',
+          ]:
+              assert marker in s or marker in d, marker
+
+          # Existing V3464 repair still must never alter quantity/PMC.
+          rp=re.search(r'void\s+repairTradeRepublicPlaceholderPricesV3464\s*\(\s*\)\s*\{',s);assert rp
+          end=s.find('void normalizeLiveCashAllPortfoliosV3464()',rp.end())
+          assert end>0
+          oldrepair=s[rp.start():end]
+          assert 'cv.put("quantity"' not in oldrepair
+          assert 'cv.put("pmc"' not in oldrepair
+
+          print('V3.4.77 verified: TR snapshot prices fixed, typo corrected, placeholders protected, quantities/PMC untouched')
+          PY3477CHECK
+
+      - name: Build signed V3.4.77 Trade Republic price fix APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.77 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.77 signed APK verified"
+
+      - name: Upload signed V3.4.77 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3477-TRADE-REPUBLIC-PRICE-FIX-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
