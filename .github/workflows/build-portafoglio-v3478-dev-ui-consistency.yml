@@ -1,0 +1,523 @@
+name: Build Portafoglio 2026 V3.4.78 UI Consistency
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3478-dev-ui-consistency.yml"
+      - ".github/workflows/build-portafoglio-v3477-dev-trade-republic-price-fix-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3477-dev-trade-republic-price-fix.yml"
+      - ".github/workflows/build-portafoglio-v3476-dev-trade-republic-recovery-diagnostics.yml"
+      - ".github/workflows/build-portafoglio-v3475-dev-trade-republic-diagnostics.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-home-wealth-diagnostics-FIX5.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX3.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX2-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3474-dev-live-position-total-sync.yml"
+      - ".github/workflows/build-portafoglio-v3473-dev-position-card-amount-colors-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3472-dev-position-functional-bar-dialog-ui-FIX4-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3471-dev-instrument-lifecycle-acc-div.yml"
+      - ".github/workflows/build-portafoglio-v3470-dev-accounting-rules-italian-ui-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3464-dev-global-cash-position-safety-FIX2.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact V3.4.77 FIX1 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3477-dev-trade-republic-price-fix-FIX1.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing V3.4.77 FIX1 workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]; i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1; continue
+              name=line[len('      - name: '):].strip()
+              j=i+1; script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1; block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '): break
+                          if raw.startswith('          '):
+                              block.append(raw[10:]); k+=1; continue
+                          if raw.strip()=='':
+                              block.append(''); k+=1; continue
+                          if raw.startswith('        '): break
+                          block.append(raw); k+=1
+                      script='\n'.join(block)+'\n'; break
+                  j+=1
+              if script is not None: parsed.append((name,script))
+              i=j if j>i else i+1
+
+          start_name='Rebuild exact V3.4.77 source'
+          end_name='Verify V3.4.77 FIX1 official FEGI correction'
+          started=False; reached=False
+          for name,script in parsed:
+              if name==start_name: started=True
+              if not started: continue
+              print(f'===== REPLAY {name} =====')
+              subprocess.run(['bash','-euo','pipefail','-c',script],check=True,env=os.environ.copy())
+              if name==end_name:
+                  reached=True
+                  break
+
+          if not started or not reached:
+              raise RuntimeError('Could not reconstruct exact V3.4.77 FIX1 source')
+          print('V3.4.77 FIX1 source reconstructed successfully')
+          PYREPLAY
+
+      - name: Patch V3.4.78 UI consistency
+        shell: bash
+        run: |
+          python3 - <<'PY3478'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          if 'versionCode 134' not in gradle:
+              raise RuntimeError('V3.4.77 FIX1 versionCode missing')
+          if 'versionName "3.4.77-dev-trade-republic-price-fix-fix1"' not in gradle:
+              raise RuntimeError('V3.4.77 FIX1 versionName missing')
+          if 'DEV 3.4.77 FIX1' not in main:
+              raise RuntimeError('V3.4.77 FIX1 visible label missing')
+
+          gradle=gradle.replace('versionCode 134','versionCode 135',1)
+          gradle=gradle.replace(
+              'versionName "3.4.77-dev-trade-republic-price-fix-fix1"',
+              'versionName "3.4.78-dev-ui-consistency"',
+              1
+          )
+          main=main.replace('DEV 3.4.77 FIX1','DEV 3.4.78 UI CONSISTENCY')
+
+          def matching_brace(t,o):
+              d=0;i=o;ins=inc=lin=blk=False;esc=False
+              while i<len(t):
+                  c=t[i];n=t[i+1] if i+1<len(t) else ''
+                  if lin:
+                      if c=='\n':lin=False
+                      i+=1;continue
+                  if blk:
+                      if c=='*' and n=='/':blk=False;i+=2;continue
+                      i+=1;continue
+                  if ins:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='"':ins=False
+                      i+=1;continue
+                  if inc:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":inc=False
+                      i+=1;continue
+                  if c=='/' and n=='/':lin=True;i+=2;continue
+                  if c=='/' and n=='*':blk=True;i+=2;continue
+                  if c=='"':ins=True;i+=1;continue
+                  if c=="'":inc=True;i+=1;continue
+                  if c=='{':d+=1
+                  elif c=='}':
+                      d-=1
+                      if d==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          # 1) Position cards: keep existing V3473 colors, then rename income label
+          # semantically without destroying the existing spans.
+          sig='void schedulePositionCardAmountColorsV3473'
+          p=main.find(sig)
+          if p<0:
+              raise RuntimeError('schedulePositionCardAmountColorsV3473 not found')
+          o=main.find('{',p); c=matching_brace(main,o)
+          injection=r'''
+                  if(content!=null){
+                      content.post(new Runnable(){
+                          @Override public void run(){ applyPositionIncomeLabelsV3478(content); }
+                      });
+                      content.postDelayed(new Runnable(){
+                          @Override public void run(){ applyPositionIncomeLabelsV3478(content); }
+                      },120);
+                  }
+          '''
+          main=main[:c]+'\n'+injection+'\n'+main[c:]
+
+          # 2) Find the method that actually renders "Aggiorna patrimonio" and
+          # inject a semantic formatting pass at the end of that method.
+          label_pos=main.find('"Aggiorna patrimonio"')
+          if label_pos<0:
+              raise RuntimeError('"Aggiorna patrimonio" literal not found')
+
+          method_rx=re.compile(
+              r'(?m)^\s*(?:(?:public|private|protected)\s+)?'
+              r'(?:static\s+)?(?:final\s+)?[\w<>\[\].?, ]+\s+'
+              r'(\w+)\s*\([^;{}]*\)\s*\{'
+          )
+          candidates=[m for m in method_rx.finditer(main,0,label_pos)]
+          if not candidates:
+              raise RuntimeError('Could not identify Aggiorna patrimonio method')
+          owner=candidates[-1]
+          mo=main.find('{',owner.start(),owner.end()+2)
+          mc=matching_brace(main,mo)
+
+          update_injection=r'''
+                  if(content!=null){
+                      content.post(new Runnable(){
+                          @Override public void run(){ applyUpdatePortfolioSemanticColorsV3478(content); }
+                      });
+                      content.postDelayed(new Runnable(){
+                          @Override public void run(){ applyUpdatePortfolioSemanticColorsV3478(content); }
+                      },120);
+                  }
+          '''
+          main=main[:mc]+'\n'+update_injection+'\n'+main[mc:]
+
+          helpers=r'''
+              // --- V3.4.78 UI consistency: semantic labels + amount-only colors ---
+
+              void applyPositionIncomeLabelsV3478(android.view.View v){
+                  if(v instanceof android.widget.TextView){
+                      android.widget.TextView t=(android.widget.TextView)v;
+                      CharSequence raw=t.getText();
+                      String s=raw==null?"":raw.toString();
+                      if(s.contains("P/L")&&s.contains("Proventi")){
+                          boolean certificate=ancestorContainsTextV3478(t,"Certificati");
+                          android.text.SpannableStringBuilder b=
+                              new android.text.SpannableStringBuilder(raw);
+                          String replacement=certificate?"Cedole":"Div.";
+                          int at=b.toString().indexOf("Proventi");
+                          if(at>=0){
+                              b.replace(at,at+"Proventi".length(),replacement);
+                              t.setText(b);
+                          }
+                      }
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++){
+                          applyPositionIncomeLabelsV3478(g.getChildAt(i));
+                      }
+                  }
+              }
+
+              boolean ancestorContainsTextV3478(android.view.View start,String needle){
+                  android.view.View cur=start;
+                  for(int level=0;level<6&&cur!=null;level++){
+                      if(viewTreeContainsTextV3478(cur,needle))return true;
+                      android.view.ViewParent p=cur.getParent();
+                      cur=(p instanceof android.view.View)?(android.view.View)p:null;
+                  }
+                  return false;
+              }
+
+              boolean viewTreeContainsTextV3478(android.view.View v,String needle){
+                  if(v instanceof android.widget.TextView){
+                      CharSequence q=((android.widget.TextView)v).getText();
+                      if(q!=null&&q.toString().contains(needle))return true;
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++){
+                          if(viewTreeContainsTextV3478(g.getChildAt(i),needle))return true;
+                      }
+                  }
+                  return false;
+              }
+
+              void applyUpdatePortfolioSemanticColorsV3478(android.view.View v){
+                  if(v instanceof android.widget.TextView){
+                      android.widget.TextView t=(android.widget.TextView)v;
+                      CharSequence raw=t.getText();
+                      if(raw!=null){
+                          String s=raw.toString();
+                          if(s.contains("Guadagno/Perdita:")||
+                             s.contains("Commissione acquisto residua:")){
+                              android.text.SpannableStringBuilder b=
+                                  new android.text.SpannableStringBuilder(raw);
+
+                              // Keep labels/descriptions white + bold.
+                              b.setSpan(
+                                  new android.text.style.StyleSpan(android.graphics.Typeface.BOLD),
+                                  0,b.length(),
+                                  android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                              );
+                              b.setSpan(
+                                  new android.text.style.ForegroundColorSpan(
+                                      android.graphics.Color.rgb(245,247,250)
+                                  ),
+                                  0,b.length(),
+                                  android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                              );
+
+                              java.util.regex.Matcher pnl=java.util.regex.Pattern.compile(
+                                  "Guadagno/Perdita:\\s*([-+]?\\d[\\d.,]*)\\s*€\\s*\\(([-+]?\\d[\\d.,]*)%\\)"
+                              ).matcher(s);
+                              if(pnl.find()){
+                                  double value=parseItalianVisibleNumberV3478(pnl.group(1));
+                                  int color=value>0.0000001
+                                      ?android.graphics.Color.rgb(46,204,113)
+                                      :(value<-0.0000001
+                                          ?android.graphics.Color.rgb(255,82,82)
+                                          :android.graphics.Color.rgb(245,247,250));
+
+                                  int euro=s.indexOf("€",pnl.end(1));
+                                  if(euro>=0){
+                                      b.setSpan(
+                                          new android.text.style.ForegroundColorSpan(color),
+                                          pnl.start(1),euro+1,
+                                          android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                                      );
+                                  }
+                                  int pct=s.indexOf("%",pnl.end(2));
+                                  if(pct>=0){
+                                      b.setSpan(
+                                          new android.text.style.ForegroundColorSpan(color),
+                                          pnl.start(2),pct+1,
+                                          android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                                      );
+                                  }
+                              }
+
+                              java.util.regex.Matcher fee=java.util.regex.Pattern.compile(
+                                  "Commissione acquisto residua:\\s*(\\d[\\d.,]*)\\s*€"
+                              ).matcher(s);
+                              if(fee.find()){
+                                  double value=parseItalianVisibleNumberV3478(fee.group(1));
+                                  if(value>0.0000001){
+                                      int euro=s.indexOf("€",fee.end(1));
+                                      if(euro>=0){
+                                          b.setSpan(
+                                              new android.text.style.ForegroundColorSpan(
+                                                  android.graphics.Color.rgb(255,82,82)
+                                              ),
+                                              fee.start(1),euro+1,
+                                              android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                                          );
+                                      }
+                                  }
+                              }
+                              t.setText(b);
+                          }
+                      }
+                  }
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      for(int i=0;i<g.getChildCount();i++){
+                          applyUpdatePortfolioSemanticColorsV3478(g.getChildAt(i));
+                      }
+                  }
+              }
+
+              double parseItalianVisibleNumberV3478(String raw){
+                  if(raw==null)return 0;
+                  String x=raw.trim().replace("€","").replace("%","").replace(" ","");
+                  if(x.isEmpty())return 0;
+                  try{
+                      if(x.contains(",")&&x.contains(".")){
+                          if(x.lastIndexOf(',')>x.lastIndexOf('.')){
+                              x=x.replace(".","").replace(',','.');
+                          }else{
+                              x=x.replace(",","");
+                          }
+                      }else if(x.contains(",")){
+                          x=x.replace(',','.');
+                      }
+                      return Double.parseDouble(x);
+                  }catch(Exception e){
+                      return 0;
+                  }
+              }
+          '''
+
+          last=main.rfind('}')
+          if last<0:
+              raise RuntimeError('MainActivity closing brace missing')
+          main=main[:last]+'\n'+helpers+'\n'+main[last:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          if db_path.read_bytes()!=db_before:
+              raise RuntimeError('DbHelper changed unexpectedly')
+
+          print('V3.4.78 applied: semantic Div./Cedole labels + Aggiorna patrimonio amount-only colors')
+          PY3478
+
+      - name: Verify V3.4.78 UI consistency and regressions
+        shell: bash
+        run: |
+          python3 - <<'PY3478CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+          compact=lambda x:re.sub(r'\s+','',x)
+
+          assert 'versionCode 135' in g
+          assert 'versionName "3.4.78-dev-ui-consistency"' in g
+          assert 'DEV 3.4.78 UI CONSISTENCY' in s
+          assert re.search(r'DB_VERSION\s*=\s*18',d)
+
+          # New semantic label behavior.
+          for marker in [
+              'applyPositionIncomeLabelsV3478',
+              'ancestorContainsTextV3478',
+              'certificate?"Cedole":"Div."',
+              'new android.text.SpannableStringBuilder(raw)',
+          ]:
+              assert marker in s,marker
+
+          # New Aggiorna patrimonio semantic styling.
+          for marker in [
+              'applyUpdatePortfolioSemanticColorsV3478',
+              'Guadagno/Perdita:',
+              'Commissione acquisto residua:',
+              'parseItalianVisibleNumberV3478',
+              'android.text.style.ForegroundColorSpan',
+              'android.text.style.StyleSpan',
+          ]:
+              assert marker in s,marker
+
+          # Ensure the actual Aggiorna patrimonio screen gets the pass.
+          title=s.find('"Aggiorna patrimonio"')
+          assert title>=0
+          nearby=s[max(0,title-12000):min(len(s),title+30000)]
+          assert 'applyUpdatePortfolioSemanticColorsV3478(content);' in nearby
+
+          # Existing position-card semantic coloring remains.
+          for marker in [
+              'V3473_POSITION_CARD_AMOUNT_COLORS',
+              'stylePositionCardAmountTextV3473',
+              'schedulePositionCardAmountColorsV3473',
+              'applyOperationSemanticColorsV3470Fix3',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+          ]:
+              assert marker in s,marker
+
+          # Trade Republic FIX1 remains exactly protected.
+          assert 'IE000OBK3UE0' in s
+          assert 'IE0000BK3UE0' not in s
+          assert 'repairTradeRepublicPricesV3477' in s
+          assert 'positions_block_tr_placeholder18_v3477' in s
+          assert 'positions_block_tr_placeholder14_fix_v3477' in s
+
+          # V3478 must not alter quantity/PMC or DB.
+          p=s.index('// --- V3.4.78 UI consistency')
+          v3478=s[p:]
+          vc=compact(v3478)
+          assert 'cv.put("quantity"' not in v3478
+          assert 'cv.put("pmc"' not in v3478
+          assert 'UPDATEpositionsSETquantity=' not in vc
+          assert 'UPDATEpositionsSETpmc=' not in vc
+
+          # Critical data-integrity protections remain intact.
+          for marker in [
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'V3474_FIX4_DIRECT_OPEN_POSITION_HOME_TOTAL',
+              'V3474_FIX2_NORMALIZED_BROKER_TOTALS',
+              'V3474_FIX3_POSITION_FIRST_HOME_TOTAL',
+              'V3472_FIX4_FIX2_IMMEDIATE_VISUAL_SYNC',
+              'applyHistoricalUiSafetyV3462',
+          ]:
+              assert marker in s or marker in d,marker
+
+          print('V3.4.78 verified: labels + amount-only colors consistent; DB18 and financial data untouched')
+          PY3478CHECK
+
+      - name: Build signed V3.4.78 UI consistency APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.78 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.78 signed APK verified"
+
+      - name: Upload signed V3.4.78 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3478-UI-CONSISTENCY-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
