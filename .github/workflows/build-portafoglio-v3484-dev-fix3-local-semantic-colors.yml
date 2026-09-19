@@ -1,0 +1,585 @@
+name: Build Portafoglio 2026 V3.4.84 FIX3 Local Semantic Colors
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3484-dev-fix3-local-semantic-colors.yml"
+      - ".github/workflows/build-portafoglio-v3483-dev-global-semantic-colors-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3483-dev-global-semantic-colors.yml"
+      - ".github/workflows/build-portafoglio-v3482-dev-performance-root-fix.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact V3.4.83 FIX2 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3483-dev-global-semantic-colors-FIX2.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]; i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1; continue
+              name=line[len('      - name: '):].strip()
+              j=i+1; script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1; block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '): break
+                          if raw.startswith('          '):
+                              block.append(raw[10:]); k+=1; continue
+                          if raw.strip()=='':
+                              block.append(''); k+=1; continue
+                          if raw.startswith('        '): break
+                          block.append(raw); k+=1
+                      script='\n'.join(block)+'\n'; break
+                  j+=1
+              if script is not None:
+                  parsed.append((name,script))
+              i=j if j>i else i+1
+
+          start='Rebuild exact V3.4.83 source'
+          end='Verify V3.4.83 FIX2 semantic color regressions'
+          started=False; reached=False
+          for name,script in parsed:
+              if name==start:
+                  started=True
+              if not started:
+                  continue
+              print(f'===== REPLAY {name} =====')
+              subprocess.run(
+                  ['bash','-euo','pipefail','-c',script],
+                  check=True,
+                  env=os.environ.copy()
+              )
+              if name==end:
+                  reached=True
+                  break
+
+          if not started or not reached:
+              raise RuntimeError('Could not reconstruct exact V3.4.83 FIX2 source')
+          print('V3.4.83 FIX2 reconstructed successfully')
+          PYREPLAY
+
+      - name: Patch V3.4.84 FIX3 local amount colors
+        shell: bash
+        run: |
+          python3 - <<'PY3484'
+          from pathlib import Path
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          if 'versionCode 142' not in gradle:
+              raise RuntimeError('Expected V3.4.83 FIX2 versionCode 142')
+          if 'versionName "3.4.83-dev-global-semantic-colors-fix2"' not in gradle:
+              raise RuntimeError('Expected V3.4.83 FIX2 versionName')
+
+          gradle=gradle.replace('versionCode 142','versionCode 143',1)
+          gradle=gradle.replace(
+              'versionName "3.4.83-dev-global-semantic-colors-fix2"',
+              'versionName "3.4.84-dev-fix3-local-semantic-colors"',
+              1
+          )
+
+          main=main.replace(
+              'DEV 3.4.83 FIX2 COLORS',
+              'DEV 3.4.84 FIX3 COLORS'
+          )
+          main=main.replace(
+              'DEV 3.4.83 GLOBAL COLORS',
+              'DEV 3.4.84 FIX3 COLORS'
+          )
+          if 'DEV 3.4.84 FIX3 COLORS' not in main:
+              raise RuntimeError('Could not install visible V3.4.84 FIX3 label')
+
+          def matching_brace(text,open_pos):
+              depth=0;i=open_pos;ins=inc=lin=blk=False;esc=False
+              while i<len(text):
+                  c=text[i];n=text[i+1] if i+1<len(text) else ''
+                  if lin:
+                      if c=='\n':lin=False
+                      i+=1;continue
+                  if blk:
+                      if c=='*' and n=='/':blk=False;i+=2;continue
+                      i+=1;continue
+                  if ins:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=='"':ins=False
+                      i+=1;continue
+                  if inc:
+                      if esc:esc=False
+                      elif c=='\\':esc=True
+                      elif c=="'":inc=False
+                      i+=1;continue
+                  if c=='/' and n=='/':lin=True;i+=2;continue
+                  if c=='/' and n=='*':blk=True;i+=2;continue
+                  if c=='"':ins=True;i+=1;continue
+                  if c=="'":inc=True;i+=1;continue
+                  if c=='{':depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced Java braces')
+
+          def replace_method(text,signature,new_method):
+              p=text.find(signature)
+              if p<0:
+                  raise RuntimeError('Missing method: '+signature)
+              o=text.find('{',p)
+              c=matching_brace(text,o)
+              return text[:p]+new_method+text[c+1:]
+
+          position_method=r'''void stylePositionCardAmountTextV3473(android.widget.TextView t){
+              if(t==null||t instanceof android.widget.EditText)return;
+              CharSequence q=t.getText();
+              if(q==null)return;
+              String s=q.toString();
+              if(s.trim().isEmpty())return;
+              String low=s.toLowerCase(java.util.Locale.ROOT);
+
+              boolean positionFinance=
+                  (low.contains("q.tà")||low.contains("q.ta"))&&
+                  low.contains("prezzo")&&
+                  (
+                      low.contains("p/l")||
+                      low.contains("proventi")||
+                      low.contains("div.")||
+                      low.contains("dividendo")||
+                      low.contains("dividendi")||
+                      low.contains("cedole")||
+                      low.contains("costi")||
+                      low.contains("commissioni")||
+                      low.contains("imposte")
+                  );
+              if(!positionFinance)return;
+
+              android.text.SpannableString sp=
+                  new android.text.SpannableString(s);
+              sp.setSpan(
+                  new android.text.style.ForegroundColorSpan(
+                      android.graphics.Color.WHITE
+                  ),
+                  0,sp.length(),
+                  android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+              );
+              sp.setSpan(
+                  new android.text.style.StyleSpan(
+                      android.graphics.Typeface.BOLD
+                  ),
+                  0,sp.length(),
+                  android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+              );
+
+              java.util.regex.Matcher pl=
+                  java.util.regex.Pattern.compile(
+                      "p/l\\s*([+\\-]?[0-9][0-9\\.,]*)\\s*€",
+                      java.util.regex.Pattern.CASE_INSENSITIVE
+                  ).matcher(s);
+              while(pl.find()){
+                  double value=parseVisibleNumberV3470(pl.group(1));
+                  if(!Double.isNaN(value)&&Math.abs(value)>0.000001){
+                      semanticSpanV3470Fix3(
+                          sp,pl.start(1),pl.end(),
+                          value<0?C_RED:C_GREEN
+                      );
+                  }
+              }
+
+              java.util.regex.Matcher inc=
+                  java.util.regex.Pattern.compile(
+                      "(?:proventi|div\\.|dividendo|dividendi|cedole)\\s*" +
+                      "([+\\-]?[0-9][0-9\\.,]*)\\s*€",
+                      java.util.regex.Pattern.CASE_INSENSITIVE
+                  ).matcher(s);
+              while(inc.find()){
+                  double value=parseVisibleNumberV3470(inc.group(1));
+                  if(!Double.isNaN(value)&&Math.abs(value)>0.000001){
+                      semanticSpanV3470Fix3(
+                          sp,inc.start(1),inc.end(),
+                          value<0?C_RED:C_GREEN
+                      );
+                  }
+              }
+
+              java.util.regex.Matcher cost=
+                  java.util.regex.Pattern.compile(
+                      "(?:costi|commissioni|imposte)\\s*" +
+                      "([+\\-]?[0-9][0-9\\.,]*)\\s*€",
+                      java.util.regex.Pattern.CASE_INSENSITIVE
+                  ).matcher(s);
+              while(cost.find()){
+                  double value=parseVisibleNumberV3470(cost.group(1));
+                  if(!Double.isNaN(value)&&Math.abs(value)>0.000001){
+                      semanticSpanV3470Fix3(
+                          sp,cost.start(1),cost.end(),C_RED
+                      );
+                  }
+              }
+
+              t.setText(sp);
+              t.setTypeface(
+                  android.graphics.Typeface.DEFAULT,
+                  android.graphics.Typeface.BOLD
+              );
+          }'''
+
+          main=replace_method(
+              main,
+              'void stylePositionCardAmountTextV3473(android.widget.TextView t)',
+              position_method
+          )
+
+          operation_method=r'''void styleOperationTextV3470Fix3(android.widget.TextView t){
+                  if(t==null||t instanceof android.widget.EditText)return;
+                  CharSequence q=t.getText();
+                  if(q==null)return;
+                  String s=q.toString();
+                  if(s.trim().isEmpty())return;
+                  String low=s.toLowerCase(java.util.Locale.ROOT);
+
+                  boolean closedOperation=
+                      low.contains("p/l netto")&&
+                      low.contains("commissioni")&&
+                      low.contains("imposte");
+                  boolean costRow=
+                      low.contains("commissione •")||
+                      low.contains("imposta •");
+                  boolean incomeRow=
+                      (low.contains("premio")||low.contains("saveback"))&&
+                      !low.contains("capitale proprio");
+                  boolean closedTitle=
+                      "Operazioni chiuse / vendite".equals(s.trim());
+
+                  if(!closedOperation&&!costRow&&!incomeRow&&!closedTitle)return;
+
+                  android.text.SpannableString sp=
+                      new android.text.SpannableString(s);
+                  sp.setSpan(
+                      new android.text.style.ForegroundColorSpan(
+                          android.graphics.Color.WHITE
+                      ),
+                      0,sp.length(),
+                      android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                  );
+                  sp.setSpan(
+                      new android.text.style.StyleSpan(
+                          android.graphics.Typeface.BOLD
+                      ),
+                      0,sp.length(),
+                      android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                  );
+
+                  if(closedOperation){
+                      java.util.regex.Matcher pl=
+                          java.util.regex.Pattern.compile(
+                              "p/l\\s+netto\\s*([+\\-]?[0-9][0-9\\.,]*)\\s*€",
+                              java.util.regex.Pattern.CASE_INSENSITIVE
+                          ).matcher(s);
+                      if(pl.find()){
+                          double value=parseVisibleNumberV3470(pl.group(1));
+                          if(!Double.isNaN(value)&&Math.abs(value)>0.000001){
+                              semanticSpanV3470Fix3(
+                                  sp,pl.start(1),pl.end(),
+                                  value<0?C_RED:C_GREEN
+                              );
+                          }
+                      }
+
+                      java.util.regex.Matcher cm=
+                          java.util.regex.Pattern.compile(
+                              "commissioni\\s*([+\\-]?[0-9][0-9\\.,]*)\\s*€",
+                              java.util.regex.Pattern.CASE_INSENSITIVE
+                          ).matcher(s);
+                      if(cm.find()){
+                          double value=parseVisibleNumberV3470(cm.group(1));
+                          if(!Double.isNaN(value)&&Math.abs(value)>0.000001){
+                              semanticSpanV3470Fix3(
+                                  sp,cm.start(1),cm.end(),C_RED
+                              );
+                          }
+                      }
+
+                      java.util.regex.Matcher tx=
+                          java.util.regex.Pattern.compile(
+                              "imposte\\s*([+\\-]?[0-9][0-9\\.,]*)\\s*€",
+                              java.util.regex.Pattern.CASE_INSENSITIVE
+                          ).matcher(s);
+                      if(tx.find()){
+                          double value=parseVisibleNumberV3470(tx.group(1));
+                          if(!Double.isNaN(value)&&Math.abs(value)>0.000001){
+                              semanticSpanV3470Fix3(
+                                  sp,tx.start(1),tx.end(),C_RED
+                              );
+                          }
+                      }
+                  }
+
+                  if(costRow){
+                      java.util.regex.Matcher amount=
+                          java.util.regex.Pattern.compile(
+                              "([+\\-]?[0-9][0-9\\.,]*)\\s*€\\s*$"
+                          ).matcher(s);
+                      if(amount.find()){
+                          double value=parseVisibleNumberV3470(amount.group(1));
+                          if(!Double.isNaN(value)&&Math.abs(value)>0.000001){
+                              semanticSpanV3470Fix3(
+                                  sp,amount.start(1),amount.end(),C_RED
+                              );
+                          }
+                      }
+                  }
+
+                  if(incomeRow){
+                      java.util.regex.Matcher amount=
+                          java.util.regex.Pattern.compile(
+                              "([+\\-]?[0-9][0-9\\.,]*)\\s*€\\s*$"
+                          ).matcher(s);
+                      if(amount.find()){
+                          double value=parseVisibleNumberV3470(amount.group(1));
+                          if(!Double.isNaN(value)&&Math.abs(value)>0.000001){
+                              semanticSpanV3470Fix3(
+                                  sp,amount.start(1),amount.end(),
+                                  value<0?C_RED:C_GREEN
+                              );
+                          }
+                      }
+                  }
+
+                  t.setText(sp);
+                  t.setTypeface(
+                      android.graphics.Typeface.DEFAULT,
+                      android.graphics.Typeface.BOLD
+                  );
+              }'''
+
+          main=replace_method(
+              main,
+              'void styleOperationTextV3470Fix3(android.widget.TextView t)',
+              operation_method
+          )
+
+          global_sig='void styleGlobalSemanticTextV3483(android.widget.TextView t)'
+          gp=main.find(global_sig)
+          if gp<0:
+              raise RuntimeError('Global semantic method missing')
+          go=main.find('{',gp)
+          gc=matching_brace(main,go)
+          global_method=main[gp:gc+1]
+
+          needle='''String s=q.toString();
+                  if(s.trim().isEmpty())return;
+'''
+          guard='''String s=q.toString();
+                  if(s.trim().isEmpty())return;
+
+                  String low=s.toLowerCase(java.util.Locale.ROOT);
+                  boolean positionFinance=
+                      (low.contains("q.tà")||low.contains("q.ta"))&&
+                      low.contains("prezzo")&&
+                      (low.contains("p/l")||
+                       low.contains("proventi")||
+                       low.contains("div.")||
+                       low.contains("dividendo")||
+                       low.contains("dividendi")||
+                       low.contains("cedole")||
+                       low.contains("costi")||
+                       low.contains("commissioni")||
+                       low.contains("imposte"));
+                  if(positionFinance)return;
+'''
+          if needle not in global_method:
+              raise RuntimeError('Global semantic insertion point missing')
+          global_method=global_method.replace(needle,guard,1)
+          main=main[:gp]+global_method+main[gc+1:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          if db_path.read_bytes()!=db_before:
+              raise RuntimeError('DbHelper changed unexpectedly')
+
+          print('V3.4.84 FIX3 applied')
+          PY3484
+
+      - name: Verify V3.4.84 FIX3 colors and regressions
+        shell: bash
+        run: |
+          python3 - <<'PY3484CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+
+          def require(cond,msg):
+              if not cond:
+                  raise RuntimeError(msg)
+              print('OK:',msg)
+
+          require('versionCode 143' in g,'versionCode 143')
+          require(
+              'versionName "3.4.84-dev-fix3-local-semantic-colors"' in g,
+              'V3.4.84 FIX3 versionName'
+          )
+          require('DEV 3.4.84 FIX3 COLORS' in s,'visible FIX3 label')
+          require('DEV 3.4.83 GLOBAL COLORS' not in s,'old GLOBAL label removed')
+          require(re.search(r'DB_VERSION\s*=\s*18',d) is not None,'DB version 18 unchanged')
+
+          p=s.find('void stylePositionCardAmountTextV3473(android.widget.TextView t)')
+          require(p>=0,'position local formatter present')
+          pos=s[p:p+9000]
+          for marker in [
+              'low.contains("div.")',
+              'low.contains("dividendo")',
+              'low.contains("dividendi")',
+              'low.contains("cedole")',
+              '(?:proventi|div\\\\.|dividendo|dividendi|cedole)',
+              'value<0?C_RED:C_GREEN',
+              'Math.abs(value)>0.000001'
+          ]:
+              require(marker in pos,'position rule '+marker)
+
+          o=s.find('void styleOperationTextV3470Fix3(android.widget.TextView t)')
+          require(o>=0,'operation local formatter present')
+          ops=s[o:o+12000]
+          for marker in [
+              'low.contains("premio")',
+              'low.contains("saveback")',
+              '!low.contains("capitale proprio")',
+              'boolean incomeRow=',
+              'value<0?C_RED:C_GREEN'
+          ]:
+              require(marker in ops,'operation rule '+marker)
+
+          q=s.find('void styleGlobalSemanticTextV3483(android.widget.TextView t)')
+          require(q>=0,'global summary formatter present')
+          glob=s[q:q+15000]
+          require('if(positionFinance)return;' in glob,'position cards excluded from global rewrite')
+          require('Tasse(?:\\\\s+(?:proventi|registrate))?' in glob,'tax rules preserved')
+          require('Altre\\\\s+imposte(?:\\\\s+[0-9]{4})?' in glob,'Altre imposte year rule preserved')
+          require('applySemanticPatternV3483(sp,s,costs,1);' in glob,'tax/cost final precedence preserved')
+
+          require('if(value>0.0000001)return C_GREEN;' in s,'positive green')
+          require('if(value<-0.0000001)return C_RED;' in s,'negative red')
+          require('if(Math.abs(value)<=0.0000001)return android.graphics.Color.WHITE;' in s,'zero white')
+
+          for marker in [
+              'stylePositionIncomeLabelV3478Fix1',
+              'applyUpdatePortfolioSemanticColorsV3478',
+              'applyOperationSemanticColorsV3470Fix3',
+              'applyHistoricalUiSafetyV3462',
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'V3474_FIX4_DIRECT_OPEN_POSITION_HOME_TOTAL',
+              'V3474_FIX2_NORMALIZED_BROKER_TOTALS',
+              'V3474_FIX3_POSITION_FIRST_HOME_TOTAL',
+              'V3472_FIX4_FIX2_IMMEDIATE_VISUAL_SYNC',
+              'repairInvalidCapitalGainTaxesV3470Fix2'
+          ]:
+              require(marker in s or marker in d,'preserved '+marker)
+
+          require('.replace(' not in pos,'position color formatter does not rewrite visible text')
+          require('.replace(' not in ops,'operation color formatter does not rewrite visible text')
+
+          print('V3.4.84 FIX3 verified')
+          PY3484CHECK
+
+      - name: Build signed V3.4.84 FIX3 APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.84 FIX3 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.84 FIX3 signed APK verified"
+
+      - name: Upload signed V3.4.84 FIX3 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3484-FIX3-LOCAL-SEMANTIC-COLORS-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
