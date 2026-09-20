@@ -1,0 +1,778 @@
+name: Build Portafoglio 2026 V3.4.86 FIX7 Fiscal Accounting Colors
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3486-dev-fix7-fiscal-accounting-colors.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix6-global-colors-no-pac-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix6-global-colors-no-pac.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix5-neutral-own-capital.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact V3.4.86 FIX6 FIX2 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAYFIX7'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3486-dev-fix6-global-colors-no-pac-FIX2.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]
+          i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1
+                  continue
+              name=line[len('      - name: '):].strip()
+              j=i+1
+              script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1
+                      block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '):
+                              break
+                          if raw.startswith('          '):
+                              block.append(raw[10:])
+                              k+=1
+                              continue
+                          if raw.strip()=='':
+                              block.append('')
+                              k+=1
+                              continue
+                          if raw.startswith('        '):
+                              break
+                          block.append(raw)
+                          k+=1
+                      script='\n'.join(block)+'\n'
+                      break
+                  j+=1
+              if script is not None:
+                  parsed.append((name,script))
+              i=j if j>i else i+1
+
+          target='Rebuild FIX5 and apply corrected FIX6 FIX2 patch'
+          found=False
+          for name,script in parsed:
+              if name!=target:
+                  continue
+              found=True
+              print(f'===== REPLAY {name} =====')
+              subprocess.run(
+                  ['bash','-euo','pipefail','-c',script],
+                  check=True,
+                  env=os.environ.copy()
+              )
+              break
+
+          if not found:
+              raise RuntimeError('Could not reconstruct V3.4.86 FIX6 FIX2 source')
+          print('V3.4.86 FIX6 FIX2 reconstructed successfully')
+          PYREPLAYFIX7
+
+      - name: Patch V3.4.86 FIX7 fiscal accounting and all-screen colors
+        shell: bash
+        run: |
+          python3 - <<'PYFIX7'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          def require(cond,msg):
+              if not cond:
+                  raise RuntimeError(msg)
+              print('OK:',msg)
+
+          require('versionCode 146' in gradle,'FIX6 versionCode 146 found')
+          require('versionName "3.4.86-dev-fix6-global-colors-no-pac"' in gradle,'FIX6 versionName found')
+          require('styleAllScreenFinanceV3486Fix6' in main,'FIX6 semantic formatter found')
+          require(re.search(r'DB_VERSION\s*=\s*18',db_path.read_text(encoding='utf-8')) is not None,'DB18 base found')
+
+          gradle=gradle.replace('versionCode 146','versionCode 147',1)
+          gradle=gradle.replace(
+              'versionName "3.4.86-dev-fix6-global-colors-no-pac"',
+              'versionName "3.4.86-dev-fix7-fiscal-accounting-colors"',
+              1
+          )
+
+          main=re.sub(
+              r'DEV 3\.4\.(?:84|85|86)[^"\n]*',
+              'DEV 3.4.86 FIX7 FISCO COLORS',
+              main
+          )
+
+          def matching_brace(text,open_pos):
+              depth=0
+              in_str=False
+              in_char=False
+              esc=False
+              line_comment=False
+              block_comment=False
+              i=open_pos
+              while i<len(text):
+                  c=text[i]
+                  n=text[i+1] if i+1<len(text) else ''
+                  if line_comment:
+                      if c=='\n': line_comment=False
+                      i+=1
+                      continue
+                  if block_comment:
+                      if c=='*' and n=='/':
+                          block_comment=False
+                          i+=2
+                          continue
+                      i+=1
+                      continue
+                  if in_str:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=='"': in_str=False
+                      i+=1
+                      continue
+                  if in_char:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=="'": in_char=False
+                      i+=1
+                      continue
+                  if c=='/' and n=='/':
+                      line_comment=True
+                      i+=2
+                      continue
+                  if c=='/' and n=='*':
+                      block_comment=True
+                      i+=2
+                      continue
+                  if c=='"':
+                      in_str=True
+                      i+=1
+                      continue
+                  if c=="'":
+                      in_char=True
+                      i+=1
+                      continue
+                  if c=='{':
+                      depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0:
+                          return i
+                  i+=1
+              raise RuntimeError('Unbalanced braces')
+
+          def replace_method(text,signature,replacement):
+              p=text.find(signature)
+              if p<0:
+                  raise RuntimeError('Missing method: '+signature)
+              o=text.find('{',p)
+              c=matching_brace(text,o)
+              return text[:p]+replacement+text[c+1:]
+
+          style_method=r'''boolean styleAllScreenFinanceV3486Fix6(android.widget.TextView t){
+                  if(t==null)return false;
+                  CharSequence q=t.getText();
+                  if(q==null)return false;
+                  String s=q.toString();
+                  if(s.trim().isEmpty())return false;
+
+                  String[] rows=s.split("\n",-1);
+                  StringBuilder clean=new StringBuilder();
+                  boolean removedPac=false;
+                  for(String row:rows){
+                      String lowRow=row.toLowerCase(java.util.Locale.ROOT);
+                      if(lowRow.contains("pac")){
+                          removedPac=true;
+                          continue;
+                      }
+                      if(clean.length()>0)clean.append("\n");
+                      clean.append(row);
+                  }
+                  if(removedPac){
+                      s=clean.toString().trim();
+                      if(s.isEmpty()){
+                          t.setVisibility(android.view.View.GONE);
+                          return true;
+                      }
+                      t.setVisibility(android.view.View.VISIBLE);
+                  }
+
+                  String low=s.toLowerCase(java.util.Locale.ROOT);
+                  boolean financeRelevant=
+                      low.contains("p/l")||
+                      low.contains("guadagno/perdita")||
+                      low.contains("rendimento")||
+                      low.contains("risultato")||
+                      low.contains("lordo")||low.contains("netto")||
+                      low.contains("div.")||low.contains("divid")||
+                      low.contains("cedol")||low.contains("provent")||
+                      low.contains("premio")||low.contains("saveback")||
+                      low.contains("recupero fiscale")||
+                      low.contains("plusvalenz")||
+                      low.contains("minusvalenz")||
+                      low.contains("perdite realizzate")||
+                      low.contains("commission")||low.contains("impost")||
+                      low.contains("tasse")||low.contains("costi")||
+                      low.contains("round up")||low.contains("capitale proprio")||
+                      low.contains("patrimonio")||low.contains("capitale iniziale")||
+                      low.contains("liquidità")||low.contains("liquidita")||
+                      low.contains("valore titoli")||low.contains("valore attuale titoli")||
+                      low.contains("titoli a fine anno")||low.contains("investito")||
+                      low.contains("q.tà")||low.contains("q.ta")||
+                      low.contains("pmc")||low.contains("prezzo");
+
+                  if(!financeRelevant){
+                      if(removedPac)t.setText(s);
+                      return removedPac;
+                  }
+
+                  android.text.SpannableString sp=new android.text.SpannableString(s);
+                  sp.setSpan(
+                      new android.text.style.ForegroundColorSpan(android.graphics.Color.WHITE),
+                      0,sp.length(),android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                  );
+                  sp.setSpan(
+                      new android.text.style.StyleSpan(android.graphics.Typeface.BOLD),
+                      0,sp.length(),android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                  );
+
+                  java.util.regex.Pattern signed=java.util.regex.Pattern.compile(
+                      "(?i)(P/L(?:\\s+(?:non\\s+realizzato|realizzato\\s+netto|realizzato\\s+lordo))?"+
+                      "|Guadagno/Perdita"+
+                      "|Rendimento(?:\\s+(?:annuale|YTD|reale|da\\s+inizio\\s+anno))?"+
+                      "|Risultato(?:\\s+dopo[^:\\n]*)?"+
+                      "|Plusvalenze\\s+realizzate"+
+                      "|Proventi\\s+netti"+
+                      "|Lordo|Netto)\\s*:?\\s*"+
+                      "([+\\-]?[0-9][0-9\\.,]*)\\s*(€|%)?"
+                  );
+
+                  java.util.regex.Pattern income=java.util.regex.Pattern.compile(
+                      "(?i)(Dividendi\\s+e\\s+cedole(?:\\s+lordi|\\s+incassati)?"+
+                      "|Div\\.|Dividendo|Dividendi|Cedole"+
+                      "|Proventi(?:\\s+(?:lordi|netti))?(?:\\s+YTD)?"+
+                      "|Recupero\\s+fiscale(?:\\s+minus)?|Premi/Saveback|Premio|Saveback)"+
+                      "[^0-9+\\-\\n]{0,48}"+
+                      "([+\\-]?[0-9][0-9\\.,]*)\\s*(€|%)?"
+                  );
+
+                  java.util.regex.Pattern costs=java.util.regex.Pattern.compile(
+                      "(?i)(Tassazione\\s+proventi"+
+                      "|Commissione(?:\\s+acquisto\\s+residua)?"+
+                      "|Commissioni(?:\\s+[0-9]{4})?"+
+                      "|Imposta(?:\\s+su\\s+plusvalenza)?"+
+                      "|Altre\\s+imposte(?:\\s+[0-9]{4})?"+
+                      "|Imposte(?:\\s+(?:proventi|operazioni))?(?:\\s+[0-9]{4})?"+
+                      "|Tasse(?:/costi)?(?:\\s+(?:proventi|registrate))?(?:\\s+YTD)?"+
+                      "|Costi(?:/imposte\\s+operazioni|\\s+totali)?)"+
+                      "[^0-9+\\-\\n]{0,32}"+
+                      "([+\\-]?[0-9][0-9\\.,]*)\\s*(€|%)?"
+                  );
+
+                  java.util.regex.Pattern loss=java.util.regex.Pattern.compile(
+                      "(?im)^\\s*(Perdita\\s*/\\s*minus|Minusvalenze?\\s+realizzate|Perdite\\s+realizzate|Minusvalenza)"+
+                      "[^0-9+\\-\\n]{0,24}"+
+                      "([+\\-]?[0-9][0-9\\.,]*)\\s*(€|%)?"
+                  );
+
+                  applySemanticPatternV3483(sp,s,loss,3);
+                  applySemanticPatternV3483(sp,s,signed,0);
+                  applySemanticPatternV3483(sp,s,income,2);
+                  applySemanticPatternV3483(sp,s,costs,1);
+
+                  t.setText(sp);
+                  t.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);
+                  return true;
+              }'''
+
+          main=replace_method(
+              main,
+              'boolean styleAllScreenFinanceV3486Fix6(android.widget.TextView t)',
+              style_method
+          )
+
+          extra_helpers=r'''
+              void styleSemanticKpiGroupV3486Fix7(android.view.ViewGroup g){
+                  if(g==null||g.getChildCount()<2)return;
+                  StringBuilder labels=new StringBuilder();
+                  java.util.ArrayList<android.widget.TextView> values=new java.util.ArrayList<>();
+                  for(int i=0;i<g.getChildCount();i++){
+                      android.view.View child=g.getChildAt(i);
+                      if(!(child instanceof android.widget.TextView))continue;
+                      android.widget.TextView tv=(android.widget.TextView)child;
+                      String x=tv.getText()==null?"":tv.getText().toString().trim();
+                      if(x.isEmpty())continue;
+                      if(x.matches("[+\\-]?[0-9][0-9\\.,]*\\s*(€|%)?")){
+                          values.add(tv);
+                      }else{
+                          if(labels.length()>0)labels.append(" ");
+                          labels.append(x.toLowerCase(java.util.Locale.ROOT));
+                      }
+                  }
+                  if(values.isEmpty()||labels.length()==0)return;
+                  String low=labels.toString();
+
+                  int mode=0;
+                  if(low.contains("tasse")||low.contains("imposte")||
+                     low.contains("tassazione")||low.contains("commission")||
+                     low.contains("costi")){
+                      mode=2;
+                  }else if(low.contains("provent")||low.contains("dividend")||
+                           low.contains("cedol")||low.contains("premio")||
+                           low.contains("saveback")||low.contains("recupero fiscale")||
+                           low.contains("p/l")||low.contains("risultato")||
+                           low.contains("rendimento")||low.contains("plusvalenz")||
+                           low.contains("minusvalenz")||low.contains("perdita")){
+                      mode=1;
+                  }
+
+                  for(android.widget.TextView v:values){
+                      double n=parseSemanticNumberV3483(v.getText().toString());
+                      int color=android.graphics.Color.WHITE;
+                      if(mode==2){
+                          color=Math.abs(n)<=0.0000001
+                              ?android.graphics.Color.WHITE:C_RED;
+                      }else if(mode==1){
+                          color=semanticSignedColorV3483(n);
+                      }
+                      v.setTextColor(color);
+                      v.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);
+                  }
+              }
+
+              double realizedPlusV3486Fix7(int year){
+                  return scalarV3470(
+                      "SELECT COALESCE(SUM(CASE WHEN t.realized_pl_gross>0 THEN t.realized_pl_gross ELSE 0 END),0) "+
+                      "FROM trade_records t JOIN portfolios p ON p.name=t.broker "+
+                      "WHERE p.active=1 AND t.trade_type='SELL' AND substr(t.date,1,4)=?",
+                      new String[]{String.valueOf(year)}
+                  );
+              }
+
+              double realizedMinusV3486Fix7(int year){
+                  return scalarV3470(
+                      "SELECT COALESCE(SUM(CASE WHEN t.realized_pl_gross<0 THEN -t.realized_pl_gross ELSE 0 END),0) "+
+                      "FROM trade_records t JOIN portfolios p ON p.name=t.broker "+
+                      "WHERE p.active=1 AND t.trade_type='SELL' AND substr(t.date,1,4)=?",
+                      new String[]{String.valueOf(year)}
+                  );
+              }
+
+              double realizedNetV3486Fix7(int year){
+                  return scalarV3470(
+                      "SELECT COALESCE(SUM(t.realized_pl_net),0) "+
+                      "FROM trade_records t JOIN portfolios p ON p.name=t.broker "+
+                      "WHERE p.active=1 AND t.trade_type='SELL' AND substr(t.date,1,4)=?",
+                      new String[]{String.valueOf(year)}
+                  );
+              }
+
+              double fiscalRecoveryV3486Fix7(int year){
+                  return Math.max(0,scalarV3470(
+                      "SELECT COALESCE(fiscal_recovery,0) FROM annual_history WHERE year=? LIMIT 1",
+                      new String[]{String.valueOf(year)}
+                  ));
+              }
+
+              double legacyIncomeTaxV3486Fix7(int year){
+                  String key="legacy_income_tax_reclassified_"+year+"_v3486fix7";
+                  String saved=db.getSetting(key,"");
+                  if(saved!=null&&!saved.trim().isEmpty()){
+                      try{return Math.max(0,Double.parseDouble(saved.trim()));}
+                      catch(Exception ignored){}
+                  }
+
+                  if(year==2026){
+                      double legacy=Math.max(0,scalarV3470(
+                          "SELECT COALESCE(annual_loss,0) FROM annual_history WHERE year=? LIMIT 1",
+                          new String[]{String.valueOf(year)}
+                      ));
+                      if(legacy>0.0001){
+                          db.setSetting(key,Double.toString(legacy));
+                          return legacy;
+                      }
+                  }
+                  return 0;
+              }
+
+              double annualIncomeTaxV3486Fix7(int year){
+                  double legacy=legacyIncomeTaxV3486Fix7(year);
+                  double detailed=year==dataYear()?Math.max(0,db.sumIncomeTaxesActive()):0;
+                  return Math.max(legacy,detailed);
+              }
+
+              void addFiscalDrawerV3486Fix7(int year){
+                  double generated=realizedMinusV3486Fix7(year);
+                  double recovery=fiscalRecoveryV3486Fix7(year);
+
+                  LinearLayout c=card();
+                  c.addView(sectionTitle("Cassetto fiscale • minusvalenze"));
+
+                  TextView g=tv("Minusvalenze generate da vendite in perdita: -"+
+                      euro.format(generated)+" €",15,true);
+                  g.setTextColor(generated>0?C_RED:android.graphics.Color.WHITE);
+                  c.addView(g);
+
+                  TextView r=tv("Recupero fiscale registrato: "+
+                      (recovery>0?"+":"")+euro.format(recovery)+" €",15,true);
+                  r.setTextColor(recovery>0?C_GREEN:android.graphics.Color.WHITE);
+                  c.addView(r);
+
+                  c.addView(muted(
+                      "Le minus nascono solo da operazioni realizzate in perdita. "+
+                      "Il recupero fiscale è mostrato separatamente e non viene confuso con la tassazione dei proventi. "+
+                      "Il saldo residuo effettivo del cassetto fiscale va allineato al rendiconto dell'intermediario, "+
+                      "perché non tutti i proventi sono fiscalmente compensabili nello stesso modo.",
+                      12
+                  ));
+                  content.addView(c);
+              }
+          '''
+
+          last=main.rfind('}')
+          if last<0:
+              raise RuntimeError('MainActivity closing brace missing')
+          main=main[:last]+'\n'+extra_helpers+'\n'+main[last:]
+
+          global_method=r'''void applyGlobalSemanticColorsV3483(android.view.View v){
+                  if(v==null)return;
+
+                  if(v instanceof android.widget.TextView){
+                      styleGlobalSemanticTextV3483((android.widget.TextView)v);
+                  }
+
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      styleSemanticKpiGroupV3486Fix7(g);
+                      for(int i=0;i<g.getChildCount();i++){
+                          applyGlobalSemanticColorsV3483(g.getChildAt(i));
+                      }
+                  }
+              }'''
+          main=replace_method(
+              main,
+              'void applyGlobalSemanticColorsV3483(android.view.View v)',
+              global_method
+          )
+
+          sync_method=r'''void syncCurrentAnnualHistoryV3452(){
+                  int y=dataYear();
+                  if(db.isAnnualClosed(y))return;
+
+                  ensureCurrentAnnualYearRecord();
+
+                  Double startCap=null,recovery=null;
+                  Cursor c=db.annualHistory();
+                  try{
+                      while(c.moveToNext()){
+                          if(c.getInt(c.getColumnIndexOrThrow("year"))!=y)continue;
+                          startCap=getNullable(c,"starting_capital");
+                          recovery=getNullable(c,"fiscal_recovery");
+                          break;
+                      }
+                  }finally{c.close();}
+
+                  double gross=db.sumIncomeActive("gross");
+                  double incomeTax=annualIncomeTaxV3486Fix7(y);
+                  double plus=realizedPlusV3486Fix7(y);
+                  double minus=realizedMinusV3486Fix7(y);
+                  double tradeNet=realizedNetV3486Fix7(y);
+                  double recoveryValue=recovery==null?0:Math.max(0,recovery);
+                  double netIncome=gross-incomeTax;
+                  double overall=netIncome+tradeNet+recoveryValue;
+                  Double rr=annualReturnFromResult(y,startCap,Double.valueOf(overall));
+
+                  android.content.ContentValues cv=new android.content.ContentValues();
+                  cv.put("gross_income",gross);
+                  cv.put("net_income",netIncome);
+                  cv.put("annual_loss",minus);
+                  cv.put("annual_taxes",incomeTax);
+                  cv.put("overall_result",overall);
+                  cv.put("portfolio_profit",overall);
+                  if(rr!=null)cv.put("return_rate",rr);
+
+                  db.getWritableDatabase().update(
+                      "annual_history",cv,"year=?",
+                      new String[]{String.valueOf(y)}
+                  );
+              }'''
+          main=replace_method(
+              main,
+              'void syncCurrentAnnualHistoryV3452()',
+              sync_method
+          )
+
+          show_p=main.find('void showHistory()')
+          if show_p<0:
+              raise RuntimeError('showHistory missing')
+          show_o=main.find('{',show_p)
+          show_c=matching_brace(main,show_o)
+          show=main[show_p:show_c+1]
+
+          cursor_anchor='Cursor ah=db.annualHistory();boolean found=false;'
+          if cursor_anchor not in show:
+              raise RuntimeError('annual history cursor anchor missing')
+          show=show.replace(
+              cursor_anchor,
+              'if(historyYear==currentDataYear)syncCurrentAnnualHistoryV3452();\n                  '+cursor_anchor,
+              1
+          )
+
+          start_anchor='if(grossBase!=null)sb.append("\\n\\nDividendi e cedole incassati: ")'
+          end_anchor='row.addView(historyAnnualFinanceText(sb.toString(),startCap,invested,cash,finalCap,grossBase,annualLoss,afterMinus,recovery,taxes,overall,rr));'
+          a=show.find(start_anchor)
+          b=show.find(end_anchor,a)
+          if a<0 or b<0:
+              raise RuntimeError('annual finance display block anchors missing')
+          b_end=b+len(end_anchor)
+
+          new_annual_block=r'''if(historyYear==currentDataYear){
+                          double grossNow=grossBase==null?0:grossBase;
+                          double taxNow=annualIncomeTaxV3486Fix7(historyYear);
+                          double plusNow=realizedPlusV3486Fix7(historyYear);
+                          double minusNow=realizedMinusV3486Fix7(historyYear);
+                          double tradeNetNow=realizedNetV3486Fix7(historyYear);
+                          double recoveryNow=recovery==null?0:Math.max(0,recovery);
+                          double netIncomeNow=grossNow-taxNow;
+                          double tradeCostsNow=Math.max(0,(plusNow-minusNow)-tradeNetNow);
+
+                          annualLoss=Double.valueOf(minusNow);
+                          taxes=Double.valueOf(taxNow);
+                          afterMinus=Double.valueOf(netIncomeNow);
+                          overall=Double.valueOf(netIncomeNow+tradeNetNow+recoveryNow);
+                          rr=annualReturnFromResult(historyYear,startCap,overall);
+
+                          sb.append("\n\nDividendi e cedole lordi: ")
+                            .append(grossNow>0?"+":"").append(euro.format(grossNow)).append(" €");
+                          if(taxNow>0.0001)sb.append("\nTassazione proventi: -")
+                            .append(euro.format(taxNow)).append(" €");
+                          sb.append("\nProventi netti: ")
+                            .append(netIncomeNow>0?"+":"").append(euro.format(netIncomeNow)).append(" €");
+                          if(plusNow>0.0001)sb.append("\nPlusvalenze realizzate: +")
+                            .append(euro.format(plusNow)).append(" €");
+                          if(minusNow>0.0001)sb.append("\nMinusvalenze realizzate: -")
+                            .append(euro.format(minusNow)).append(" €");
+                          if(tradeCostsNow>0.0001)sb.append("\nCosti/imposte operazioni: -")
+                            .append(euro.format(tradeCostsNow)).append(" €");
+                          if(recoveryNow>0.0001)sb.append("\nRecupero fiscale minus: +")
+                            .append(euro.format(recoveryNow)).append(" €");
+                          sb.append("\nRisultato complessivo: ")
+                            .append(overall>0?"+":"").append(euro.format(overall)).append(" €");
+                          if(rr!=null)sb.append("\nRendimento annuale: ")
+                            .append(pct.format(rr)).append(" • flussi neutralizzati");
+                      }else{
+                          if(grossBase!=null)sb.append("\n\nDividendi e cedole incassati: ")
+                            .append(grossBase>0?"+":"").append(euro.format(grossBase)).append(" €");
+                          if(annualLoss!=null&&annualLoss>0.0001)sb.append("\nPerdita / minus: -")
+                            .append(euro.format(Math.abs(annualLoss))).append(" €");
+                          if(afterMinus!=null)sb.append("\nRisultato dopo perdita/minus: ")
+                            .append(afterMinus>0?"+":"").append(euro.format(afterMinus)).append(" €");
+                          if(recovery!=null&&Math.abs(recovery)>0.0001)sb.append("\nRecupero fiscale minus: +")
+                            .append(euro.format(Math.abs(recovery))).append(" €");
+                          double tx=Math.max(0,taxes==null?0:taxes);
+                          if(tx>0.0001)sb.append("\nTasse/costi proventi: -")
+                            .append(euro.format(tx)).append(" €");
+                          if(overall!=null){
+                              sb.append("\nRisultato complessivo: ")
+                                .append(overall>0?"+":"").append(euro.format(overall)).append(" €");
+                              if(rr!=null)sb.append("\nRendimento annuale: ")
+                                .append(pct.format(rr)).append(" • dato storico aggregato");
+                          }
+                      }
+                      if(closed&&!closedAt.isEmpty())sb.append("\nChiuso il: ").append(closedAt);
+                      row.addView(historyAnnualFinanceText(
+                          sb.toString(),startCap,invested,cash,finalCap,
+                          grossBase,annualLoss,afterMinus,recovery,taxes,overall,rr
+                      ));'''
+
+          show=show[:a]+new_annual_block+show[b_end:]
+
+          annual_add='content.addView(annual);'
+          if annual_add not in show:
+              raise RuntimeError('annual card add anchor missing')
+          show=show.replace(
+              annual_add,
+              annual_add+'\n                  if(historyYear==currentDataYear)addFiscalDrawerV3486Fix7(historyYear);',
+              1
+          )
+
+          main=main[:show_p]+show+main[show_c+1:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          if db_path.read_bytes()!=db_before:
+              raise RuntimeError('DbHelper changed unexpectedly')
+
+          print('V3.4.86 FIX7 applied: fiscal accounting + cassetto + colors + PAC newline fix')
+          PYFIX7
+
+      - name: Verify V3.4.86 FIX7 accounting colors and safety
+        shell: bash
+        run: |
+          python3 - <<'PYFIX7CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+
+          def require(cond,msg):
+              if not cond:
+                  raise RuntimeError(msg)
+              print('OK:',msg)
+
+          require('versionCode 147' in g,'versionCode 147')
+          require('versionName "3.4.86-dev-fix7-fiscal-accounting-colors"' in g,'FIX7 versionName')
+          require('DEV 3.4.86 FIX7 FISCO COLORS' in s,'visible FIX7 label')
+          require('DEV 3.4.84 FIX3 COLORS' not in s,'stale V3.4.84 label removed')
+          require(re.search(r'DB_VERSION\s*=\s*18',d) is not None,'DB version 18 unchanged')
+
+          require('realizedPlusV3486Fix7' in s,'realized plus helper')
+          require('realizedMinusV3486Fix7' in s,'realized minus helper')
+          require("t.realized_pl_gross<0" in s,'minus only from realized negative sales')
+          require('legacy_income_tax_reclassified_' in s,'legacy 2026 tax reclassification')
+          require('return Math.max(legacy,detailed);' in s,'income tax de-duplication')
+          require('cv.put("annual_loss",minus);' in s,'annual_loss now stores realized losses only')
+          require('cv.put("annual_taxes",incomeTax);' in s,'annual taxes separated')
+          require('cv.put("portfolio_profit",overall);' in s,'overall annual result synchronized')
+
+          for marker in [
+              'Dividendi e cedole lordi: ',
+              'Tassazione proventi: -',
+              'Proventi netti: ',
+              'Plusvalenze realizzate: +',
+              'Minusvalenze realizzate: -',
+              'Costi/imposte operazioni: -',
+              'Recupero fiscale minus: +',
+              'Cassetto fiscale • minusvalenze',
+              'Minusvalenze generate da vendite in perdita: -'
+          ]:
+              require(marker in s,'new accounting label '+marker)
+
+          require('styleSemanticKpiGroupV3486Fix7' in s,'split KPI semantic coloring installed')
+          require('applyGlobalSemanticColorsV3483(g.getChildAt(i))' in s,'global recursive color pass preserved')
+
+          p_loss=s.find('applySemanticPatternV3483(sp,s,loss,3);')
+          p_signed=s.find('applySemanticPatternV3483(sp,s,signed,0);')
+          require(p_loss>=0 and p_signed>=0 and p_loss<p_signed,'signed values override misleading loss words')
+
+          require('String[] rows=s.split("\\n",-1);' in s,'PAC row splitter uses real newline')
+          require('clean.append("\\n");' in s,'PAC cleanup writes newline escape')
+          require('clean.append("\\\\n");' not in s,'literal backslash-n removed')
+
+          for marker in [
+              '"Q.tà "+quantityItV3470(r.qty)',
+              'decimalInputItV3470(r.pmc)+" €"',
+              'decimalInputItV3470(r.price)+" €"',
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'V3474_FIX4_DIRECT_OPEN_POSITION_HOME_TOTAL',
+              'V3474_FIX2_NORMALIZED_BROKER_TOTALS',
+              'V3474_FIX3_POSITION_FIRST_HOME_TOTAL',
+              'V3472_FIX4_FIX2_IMMEDIATE_VISUAL_SYNC',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+              'applyHistoricalUiSafetyV3462',
+              'Performance = proventi lordi + P/L realizzato lordo.'
+          ]:
+              require(marker in s or marker in d,'preserved '+marker)
+
+          print('V3.4.86 FIX7 verified')
+          PYFIX7CHECK
+
+      - name: Build signed V3.4.86 FIX7 APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.86 FIX7 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.86 FIX7 signed APK verified"
+
+      - name: Upload signed V3.4.86 FIX7 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3486-FIX7-FISCAL-ACCOUNTING-COLORS-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
