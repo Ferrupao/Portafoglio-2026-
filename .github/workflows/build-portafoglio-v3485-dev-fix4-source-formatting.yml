@@ -1,0 +1,305 @@
+name: Build Portafoglio 2026 V3.4.85 FIX4 Source Formatting
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3485-dev-fix4-source-formatting.yml"
+      - ".github/workflows/build-portafoglio-v3484-dev-fix3-local-semantic-colors-CORRETTO3.yml"
+      - ".github/workflows/build-portafoglio-v3483-dev-global-semantic-colors-FIX2.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact V3.4.84 FIX3 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3484-dev-fix3-local-semantic-colors-CORRETTO3.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]; i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1; continue
+              name=line[len('      - name: '):].strip()
+              j=i+1; script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1; block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '): break
+                          if raw.startswith('          '):
+                              block.append(raw[10:]); k+=1; continue
+                          if raw.strip()=='':
+                              block.append(''); k+=1; continue
+                          if raw.startswith('        '): break
+                          block.append(raw); k+=1
+                      script='\n'.join(block)+'\n'; break
+                  j+=1
+              if script is not None:
+                  parsed.append((name,script))
+              i=j if j>i else i+1
+
+          start='Rebuild exact V3.4.83 FIX2 source'
+          end='Verify V3.4.84 FIX3 colors and regressions'
+          started=False; reached=False
+          for name,script in parsed:
+              if name==start:
+                  started=True
+              if not started:
+                  continue
+              print(f'===== REPLAY {name} =====')
+              subprocess.run(
+                  ['bash','-euo','pipefail','-c',script],
+                  check=True,
+                  env=os.environ.copy()
+              )
+              if name==end:
+                  reached=True
+                  break
+
+          if not started or not reached:
+              raise RuntimeError('Could not reconstruct exact V3.4.84 FIX3 source')
+          print('V3.4.84 FIX3 reconstructed successfully')
+          PYREPLAY
+
+      - name: Patch V3.4.85 FIX4 source-safe position formatting and history colors
+        shell: bash
+        run: |
+          python3 - <<'PY3485'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          if 'versionCode 143' not in gradle:
+              raise RuntimeError('Expected V3.4.84 FIX3 versionCode 143')
+          if 'versionName "3.4.84-dev-fix3-local-semantic-colors"' not in gradle:
+              raise RuntimeError('Expected V3.4.84 FIX3 versionName')
+          if 'DEV 3.4.84 FIX3 COLORS' not in main:
+              raise RuntimeError('Expected V3.4.84 FIX3 visible label')
+
+          gradle=gradle.replace('versionCode 143','versionCode 144',1)
+          gradle=gradle.replace(
+              'versionName "3.4.84-dev-fix3-local-semantic-colors"',
+              'versionName "3.4.85-dev-fix4-source-formatting"',
+              1
+          )
+          main=main.replace(
+              'DEV 3.4.84 FIX3 COLORS',
+              'DEV 3.4.85 FIX4 FORMAT',
+              1
+          )
+
+          # 1) FIX THE REAL PMC/PREZZO SOURCE, not the colors.
+          # The old card emitted raw trim(...) values. The legacy Italian-UI
+          # normalizer then repeatedly rewrote them, so e.g. 3.21 became
+          # "3,00 €,0,00 €,21,00 €" after multiple passes.
+          old_body='''String body="Q.tà "+trim(r.qty)+" • PMC "+(r.pmc==null?"non inserito":trim(r.pmc))+" • Prezzo "+trim(r.price)+(r.pmc==null?"":"\\nP/L "+euro.format(r.pl)+" €")+" • Proventi "+euro.format(income)+" €";'''
+          new_body='''String body="Q.tà "+quantityItV3470(r.qty)+" • PMC "+(r.pmc==null?"non inserito":decimalInputItV3470(r.pmc)+" €")+" • Prezzo "+decimalInputItV3470(r.price)+" €"+(r.pmc==null?"":"\\nP/L "+euro.format(r.pl)+" €")+" • Proventi "+euro.format(income)+" €";'''
+          if old_body not in main:
+              raise RuntimeError('Position body source anchor missing')
+          main=main.replace(old_body,new_body,1)
+
+          # 2) Do not let the legacy Italian-UI normalizer touch a position card
+          # after the card has been rendered with locale-safe numeric fields.
+          old_norm='''String old=t.getText()==null?"":t.getText().toString();String neu=normalizeUiTextV3470(old);if(!old.equals(neu))t.setText(neu);'''
+          new_norm='''String old=t.getText()==null?"":t.getText().toString();boolean positionFinanceV3485=(old.contains("Q.tà")||old.contains("Q.ta"))&&old.contains("PMC")&&old.contains("Prezzo");String neu=positionFinanceV3485?old:normalizeUiTextV3470(old);if(!old.equals(neu))t.setText(neu);'''
+          if old_norm not in main:
+              raise RuntimeError('Italian UI normalizer call anchor missing')
+          main=main.replace(old_norm,new_norm,1)
+
+          # 3) History: the global semantic pass had been resetting the existing
+          # green/red spans, but its regex did not recognize these compound labels.
+          old_income='''"(?i)(Div\\.|Dividendo|Dividendi|Cedole"+'''
+          new_income='''"(?i)(Dividendi\\s+e\\s+cedole\\s+incassati|Div\\.|Dividendo|Dividendi|Cedole"+'''
+          if old_income not in main:
+              raise RuntimeError('Global income regex anchor missing')
+          main=main.replace(old_income,new_income,1)
+
+          old_return='''"|Rendimento(?:\\s+(?:YTD|reale|da\\s+inizio\\s+anno))?"+'''
+          new_return='''"|Rendimento(?:\\s+(?:YTD|reale|da\\s+inizio\\s+anno|annuale))?"+'''
+          if old_return not in main:
+              raise RuntimeError('Global rendimento regex anchor missing')
+          main=main.replace(old_return,new_return,1)
+
+          old_overall='''"|Risultato\\s+complessivo"+'''
+          new_overall='''"|Risultato\\s+dopo\\s+perdita/minus"+\n                      "|Risultato\\s+complessivo"+'''
+          if old_overall not in main:
+              raise RuntimeError('Global result regex anchor missing')
+          main=main.replace(old_overall,new_overall,1)
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          if db_path.read_bytes()!=db_before:
+              raise RuntimeError('DbHelper changed unexpectedly')
+
+          print('V3.4.85 FIX4 applied: source-safe PMC/Prezzo + stable history semantic colors')
+          PY3485
+
+      - name: Verify V3.4.85 FIX4 source formatting and regressions
+        shell: bash
+        run: |
+          python3 - <<'PY3485CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+          compact=lambda x:re.sub(r'\s+','',x)
+
+          def require(cond,msg):
+              if not cond:
+                  raise RuntimeError(msg)
+              print('OK:',msg)
+
+          require('versionCode 144' in g,'versionCode 144')
+          require('versionName "3.4.85-dev-fix4-source-formatting"' in g,'V3.4.85 versionName')
+          require('DEV 3.4.85 FIX4 FORMAT' in s,'visible V3.4.85 label')
+          require(re.search(r'DB_VERSION\s*=\s*18',d) is not None,'DB version 18 unchanged')
+
+          # Exact card construction must use the underlying numeric fields once.
+          require('"Q.tà "+quantityItV3470(r.qty)' in s,'quantity formatted directly from numeric source')
+          require('decimalInputItV3470(r.pmc)+" €"' in s,'PMC formatted directly from numeric source')
+          require('decimalInputItV3470(r.price)+" €"' in s,'price formatted directly from numeric source')
+          require('"Q.tà "+trim(r.qty)' not in s,'old raw position-card construction removed')
+
+          # Critical regression: repeated Italian-UI passes must never reformat
+          # the position card again.
+          require('positionFinanceV3485' in s,'position Italian-UI guard present')
+          require('String neu=positionFinanceV3485?old:normalizeUiTextV3470(old);' in s,'position card excluded from legacy normalizer')
+
+          # History rules visible in the screenshots.
+          require('Dividendi\\s+e\\s+cedole\\s+incassati' in s,'compound dividends/coupons label recognized')
+          require('da\\s+inizio\\s+anno|annuale' in s,'annual return recognized')
+          require('Risultato\\s+dopo\\s+perdita/minus' in s,'result-after-loss recognized')
+
+          # Preserve the working V3.4.84 semantic behavior.
+          for marker in [
+              'stylePositionCardAmountTextV3473',
+              'stylePositionIncomeLabelV3478Fix1',
+              'applyOperationSemanticColorsV3470Fix3',
+              'low.contains("premio")',
+              'low.contains("saveback")',
+              '!low.contains("capitale proprio")',
+              'if(positionFinance)return;',
+              'if(value>0.0000001)return C_GREEN;',
+              'if(value<-0.0000001)return C_RED;',
+              'if(Math.abs(value)<=0.0000001)return android.graphics.Color.WHITE;'
+          ]:
+              require(marker in s,'preserved '+marker)
+
+          # Data/accounting protections remain untouched.
+          for marker in [
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'V3474_FIX4_DIRECT_OPEN_POSITION_HOME_TOTAL',
+              'V3474_FIX2_NORMALIZED_BROKER_TOTALS',
+              'V3474_FIX3_POSITION_FIRST_HOME_TOTAL',
+              'V3472_FIX4_FIX2_IMMEDIATE_VISUAL_SYNC',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+              'applyHistoricalUiSafetyV3462'
+          ]:
+              require(marker in s or marker in d,'preserved '+marker)
+
+          require('cv.put("quantity"' not in s[s.find('DEV 3.4.85 FIX4 FORMAT'):], 'FIX4 adds no quantity writes')
+          require('UPDATEpositionsSETquantity=' not in compact(s[s.find('DEV 3.4.85 FIX4 FORMAT'):]), 'FIX4 adds no position quantity SQL writes')
+
+          print('V3.4.85 FIX4 verified: PMC/Prezzo source-safe and history colors complete')
+          PY3485CHECK
+
+      - name: Build signed V3.4.85 FIX4 APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.85 FIX4 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.85 FIX4 signed APK verified"
+
+      - name: Upload signed V3.4.85 FIX4 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3485-FIX4-SOURCE-FORMATTING-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
