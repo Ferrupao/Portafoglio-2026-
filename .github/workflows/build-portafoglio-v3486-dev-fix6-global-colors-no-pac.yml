@@ -1,0 +1,452 @@
+name: Build Portafoglio 2026 V3.4.86 FIX6 Global Colors No PAC
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3486-dev-fix6-global-colors-no-pac.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix5-neutral-own-capital.yml"
+      - ".github/workflows/build-portafoglio-v3485-dev-fix4-source-formatting-CORRETTO.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact V3.4.86 FIX5 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY3486FIX6'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3486-dev-fix5-neutral-own-capital.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]; i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1; continue
+              name=line[len('      - name: '):].strip()
+              j=i+1; script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1; block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '): break
+                          if raw.startswith('          '):
+                              block.append(raw[10:]); k+=1; continue
+                          if raw.strip()=='':
+                              block.append(''); k+=1; continue
+                          if raw.startswith('        '): break
+                          block.append(raw); k+=1
+                      script='\n'.join(block)+'\n'; break
+                  j+=1
+              if script is not None:
+                  parsed.append((name,script))
+              i=j if j>i else i+1
+
+          start='Rebuild exact V3.4.85 FIX4 source'
+          end='Verify V3.4.86 FIX5 regression safety'
+          started=False; reached=False
+          for name,script in parsed:
+              if name==start:
+                  started=True
+              if not started:
+                  continue
+              print(f'===== REPLAY {name} =====')
+              subprocess.run(['bash','-euo','pipefail','-c',script],check=True,env=os.environ.copy())
+              if name==end:
+                  reached=True
+                  break
+
+          if not started or not reached:
+              raise RuntimeError('Could not reconstruct exact V3.4.86 FIX5 source')
+          print('V3.4.86 FIX5 reconstructed successfully')
+          PYREPLAY3486FIX6
+
+      - name: Patch V3.4.86 FIX6 global colors and remove PAC from UI
+        shell: bash
+        run: |
+          python3 - <<'PY3486FIX6'
+          from pathlib import Path
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          if 'versionCode 145' not in gradle:
+              raise RuntimeError('Expected V3.4.86 FIX5 versionCode 145')
+          if 'versionName "3.4.86-dev-fix5-neutral-own-capital"' not in gradle:
+              raise RuntimeError('Expected V3.4.86 FIX5 versionName')
+          if 'DEV 3.4.86 FIX5 CAPITAL' not in main:
+              raise RuntimeError('Expected V3.4.86 FIX5 visible label')
+
+          gradle=gradle.replace('versionCode 145','versionCode 146',1)
+          gradle=gradle.replace(
+              'versionName "3.4.86-dev-fix5-neutral-own-capital"',
+              'versionName "3.4.86-dev-fix6-global-colors-no-pac"',
+              1
+          )
+          main=main.replace(
+              'DEV 3.4.86 FIX5 CAPITAL',
+              'DEV 3.4.86 FIX6 COLORS NO PAC',
+              1
+          )
+
+          def matching_brace(text,open_pos):
+              depth=0
+              in_str=False; in_char=False; esc=False
+              line_comment=False; block_comment=False
+              i=open_pos
+              while i<len(text):
+                  c=text[i]; n=text[i+1] if i+1<len(text) else ''
+                  if line_comment:
+                      if c=='\n': line_comment=False
+                      i+=1; continue
+                  if block_comment:
+                      if c=='*' and n=='/': block_comment=False; i+=2; continue
+                      i+=1; continue
+                  if in_str:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=='"': in_str=False
+                      i+=1; continue
+                  if in_char:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=="'": in_char=False
+                      i+=1; continue
+                  if c=='/' and n=='/': line_comment=True; i+=2; continue
+                  if c=='/' and n=='*': block_comment=True; i+=2; continue
+                  if c=='"': in_str=True; i+=1; continue
+                  if c=="'": in_char=True; i+=1; continue
+                  if c=='{': depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0: return i
+                  i+=1
+              raise RuntimeError('Unbalanced braces')
+
+          helpers=r'''
+              boolean styleAllScreenFinanceV3486Fix6(android.widget.TextView t){
+                  if(t==null)return false;
+                  CharSequence q=t.getText();
+                  if(q==null)return false;
+                  String s=q.toString();
+                  if(s.trim().isEmpty())return false;
+
+                  // PAC is no longer part of the visible app. Remove only the
+                  // PAC rows, preserving the other rows in compound cards.
+                  String[] rows=s.split("\\n",-1);
+                  StringBuilder clean=new StringBuilder();
+                  boolean removedPac=false;
+                  for(String row:rows){
+                      String lowRow=row.toLowerCase(java.util.Locale.ROOT);
+                      if(lowRow.contains("pac")){
+                          removedPac=true;
+                          continue;
+                      }
+                      if(clean.length()>0)clean.append("\\n");
+                      clean.append(row);
+                  }
+                  if(removedPac){
+                      s=clean.toString().trim();
+                      if(s.isEmpty()){
+                          t.setVisibility(android.view.View.GONE);
+                          return true;
+                      }
+                      t.setVisibility(android.view.View.VISIBLE);
+                  }
+
+                  String low=s.toLowerCase(java.util.Locale.ROOT);
+                  boolean financeRelevant=
+                      low.contains("p/l")||
+                      low.contains("guadagno/perdita")||
+                      low.contains("rendimento")||
+                      low.contains("risultato")||
+                      low.contains("lordo")||low.contains("netto")||
+                      low.contains("div.")||low.contains("divid")||
+                      low.contains("cedol")||low.contains("provent")||
+                      low.contains("premio")||low.contains("saveback")||
+                      low.contains("recupero fiscale")||
+                      low.contains("perdita")||low.contains("minus")||
+                      low.contains("commission")||low.contains("impost")||
+                      low.contains("tasse")||low.contains("costi")||
+                      low.contains("round up")||low.contains("capitale proprio")||
+                      low.contains("patrimonio")||low.contains("capitale iniziale")||
+                      low.contains("liquidità")||low.contains("liquidita")||
+                      low.contains("valore titoli")||low.contains("valore attuale titoli")||
+                      low.contains("titoli a fine anno")||low.contains("investito")||
+                      low.contains("q.tà")||low.contains("q.ta")||
+                      low.contains("pmc")||low.contains("prezzo");
+
+                  if(!financeRelevant){
+                      if(removedPac)t.setText(s);
+                      return removedPac;
+                  }
+
+                  android.text.SpannableString sp=new android.text.SpannableString(s);
+                  sp.setSpan(
+                      new android.text.style.ForegroundColorSpan(android.graphics.Color.WHITE),
+                      0,sp.length(),android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                  );
+                  sp.setSpan(
+                      new android.text.style.StyleSpan(android.graphics.Typeface.BOLD),
+                      0,sp.length(),android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                  );
+
+                  java.util.regex.Pattern signed=java.util.regex.Pattern.compile(
+                      "(?i)(P/L(?:\\s+(?:non\\s+realizzato|realizzato\\s+netto|realizzato\\s+lordo))?"+
+                      "|Guadagno/Perdita"+
+                      "|Rendimento(?:\\s+(?:annuale|YTD|reale|da\\s+inizio\\s+anno))?"+
+                      "|Risultato(?:\\s+dopo\\s+perdita/minus|\\s+complessivo)?"+
+                      "|Lordo|Netto)\\s*:?\\s*"+
+                      "([+\\-]?[0-9][0-9\\.,]*)\\s*(€|%)?"
+                  );
+
+                  java.util.regex.Pattern income=java.util.regex.Pattern.compile(
+                      "(?i)(Dividendi\\s+e\\s+cedole\\s+incassati"+
+                      "|Div\\.|Dividendo|Dividendi|Cedole"+
+                      "|Proventi(?:\\s+(?:lordi|netti))?(?:\\s+YTD)?"+
+                      "|Recupero\\s+fiscale|Premi/Saveback|Premio|Saveback)"+
+                      "[^0-9+\\-\\n]{0,48}"+
+                      "([+\\-]?[0-9][0-9\\.,]*)\\s*(€|%)?"
+                  );
+
+                  java.util.regex.Pattern costs=java.util.regex.Pattern.compile(
+                      "(?i)(Commissione(?:\\s+acquisto\\s+residua)?"+
+                      "|Commissioni(?:\\s+[0-9]{4})?"+
+                      "|Imposta(?:\\s+su\\s+plusvalenza)?"+
+                      "|Altre\\s+imposte(?:\\s+[0-9]{4})?"+
+                      "|Imposte(?:\\s+(?:proventi|operazioni))?(?:\\s+[0-9]{4})?"+
+                      "|Tasse(?:/costi)?(?:\\s+(?:proventi|registrate))?(?:\\s+YTD)?"+
+                      "|Costi(?:\\s+totali)?)"+
+                      "[^0-9+\\-\\n]{0,32}"+
+                      "([+\\-]?[0-9][0-9\\.,]*)\\s*(€|%)?"
+                  );
+
+                  java.util.regex.Pattern loss=java.util.regex.Pattern.compile(
+                      "(?i)(Perdita\\s*/\\s*minus|Minusvalenza|Minus)"+
+                      "[^0-9+\\-\\n]{0,24}"+
+                      "([+\\-]?[0-9][0-9\\.,]*)\\s*(€|%)?"
+                  );
+
+                  // Base is always neutral white. Then only semantic financial
+                  // amounts receive green/red. Costs are applied last so they
+                  // win if a label contains more than one keyword.
+                  applySemanticPatternV3483(sp,s,signed,0);
+                  applySemanticPatternV3483(sp,s,income,2);
+                  applySemanticPatternV3483(sp,s,loss,3);
+                  applySemanticPatternV3483(sp,s,costs,1);
+
+                  t.setText(sp);
+                  t.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);
+                  return true;
+              }
+          '''
+
+          # Insert FIX6 helper before MainActivity's final brace.
+          if 'styleAllScreenFinanceV3486Fix6' not in main:
+              last=main.rfind('}')
+              if last<0:
+                  raise RuntimeError('MainActivity closing brace not found')
+              main=main[:last]+'\n'+helpers+'\n'+main[last:]
+
+          # Route every TextView through FIX6 before the older semantic rules.
+          sig='void styleGlobalSemanticTextV3483(android.widget.TextView t)'
+          p=main.find(sig)
+          if p<0:
+              raise RuntimeError('Global semantic formatter missing')
+          o=main.find('{',p); c=matching_brace(main,o)
+          method=main[p:c+1]
+
+          # PAC-only buttons must disappear completely.
+          old_button='''if(t instanceof android.widget.EditText)return;\n                  if(t instanceof android.widget.Button)return;'''
+          new_button='''if(t instanceof android.widget.EditText)return;\n                  if(t instanceof android.widget.Button){\n                      CharSequence bq=t.getText();\n                      if(bq!=null&&bq.toString().toLowerCase(java.util.Locale.ROOT).contains("pac")){\n                          t.setVisibility(android.view.View.GONE);\n                      }\n                      return;\n                  }'''
+          if old_button in method:
+              method=method.replace(old_button,new_button,1)
+          elif 'bq.toString().toLowerCase' not in method:
+              raise RuntimeError('Button guard shape changed unexpectedly')
+
+          anchor='String s=q.toString();'
+          if anchor not in method:
+              raise RuntimeError('Global semantic text anchor missing')
+          call='''String s=q.toString();\n                  if(styleAllScreenFinanceV3486Fix6(t))return;'''
+          if 'styleAllScreenFinanceV3486Fix6(t)' not in method:
+              method=method.replace(anchor,call,1)
+
+          main=main[:p]+method+main[c+1:]
+
+          # Strengthen the common screen scheduler. Four passes cover all main
+          # screens and delayed renderers, not only Performance.
+          sched_sig='void scheduleGlobalSemanticColorsV3483()'
+          sp=main.find(sched_sig)
+          if sp<0:
+              raise RuntimeError('Global semantic scheduler missing')
+          so=main.find('{',sp); sc=matching_brace(main,so)
+          schedule=r'''void scheduleGlobalSemanticColorsV3483(){
+                  if(content==null)return;
+                  final int[] delaysV3486Fix6=new int[]{0,120,360,900};
+                  for(final int delayV3486Fix6:delaysV3486Fix6){
+                      content.postDelayed(new Runnable(){
+                          @Override public void run(){
+                              applyGlobalSemanticColorsV3483(content);
+                          }
+                      },delayV3486Fix6);
+                  }
+              }'''
+          main=main[:sp]+schedule+main[sc+1:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          if db_path.read_bytes()!=db_before:
+              raise RuntimeError('DbHelper changed unexpectedly')
+
+          print('V3.4.86 FIX6 applied: global colors on all screens + PAC removed from visible UI')
+          PY3486FIX6
+
+      - name: Verify V3.4.86 FIX6 regressions
+        shell: bash
+        run: |
+          python3 - <<'PY3486FIX6CHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+
+          def require(cond,msg):
+              if not cond:
+                  raise RuntimeError(msg)
+              print('OK:',msg)
+
+          require('versionCode 146' in g,'versionCode 146')
+          require('versionName "3.4.86-dev-fix6-global-colors-no-pac"' in g,'FIX6 versionName')
+          require('DEV 3.4.86 FIX6 COLORS NO PAC' in s,'visible FIX6 label')
+          require(re.search(r'DB_VERSION\s*=\s*18',d) is not None,'DB version 18 unchanged')
+
+          require('styleAllScreenFinanceV3486Fix6' in s,'FIX6 all-screen formatter installed')
+          require('if(styleAllScreenFinanceV3486Fix6(t))return;' in s,'FIX6 runs before legacy formatter')
+          require('new int[]{0,120,360,900}' in s,'multi-pass formatter scheduled on every main screen')
+          require('lowRow.contains("pac")' in s,'PAC rows stripped from compound text')
+          require('contains("pac")' in s and 'setVisibility(android.view.View.GONE)' in s,'PAC-only controls hidden')
+
+          for marker in [
+              'Dividendi\\\\s+e\\\\s+cedole\\\\s+incassati',
+              'Premi/Saveback',
+              'Perdita\\\\s*/\\\\s*minus',
+              'Tasse(?:/costi)?',
+              'if(value>0.0000001)return C_GREEN;',
+              'if(value<-0.0000001)return C_RED;',
+              'if(Math.abs(value)<=0.0000001)return android.graphics.Color.WHITE;'
+          ]:
+              require(marker in s,'semantic rule preserved/extended: '+marker)
+
+          # Existing data/accounting protections remain untouched.
+          for marker in [
+              '"Q.tà "+quantityItV3470(r.qty)',
+              'decimalInputItV3470(r.pmc)+" €"',
+              'decimalInputItV3470(r.price)+" €"',
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'V3474_FIX4_DIRECT_OPEN_POSITION_HOME_TOTAL',
+              'V3474_FIX2_NORMALIZED_BROKER_TOTALS',
+              'V3474_FIX3_POSITION_FIRST_HOME_TOTAL',
+              'V3472_FIX4_FIX2_IMMEDIATE_VISUAL_SYNC',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+              'applyHistoricalUiSafetyV3462',
+              'Performance = proventi lordi + P/L realizzato lordo.'
+          ]:
+              require(marker in s or marker in d,'preserved '+marker)
+
+          print('V3.4.86 FIX6 verified')
+          PY3486FIX6CHECK
+
+      - name: Build signed V3.4.86 FIX6 APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.86 FIX6 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.86 FIX6 signed APK verified"
+
+      - name: Upload signed V3.4.86 FIX6 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3486-FIX6-GLOBAL-COLORS-NO-PAC-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
