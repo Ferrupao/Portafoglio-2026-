@@ -1,0 +1,464 @@
+name: Build Portafoglio 2026 V3.4.86 FIX10 FIX4 FIX1 Global Value Colors
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3486-dev-fix10-global-value-colors-FIX4-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix10-global-value-colors-FIX4.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix10-performance-sql-null-safe-FIX3.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix10-performance-safe-FIX2.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix10-deterministic-colors-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix9-performance-colors-stability.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact V3.4.86 FIX10 FIX3 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          wf=Path('.github/workflows/build-portafoglio-v3486-dev-fix10-performance-sql-null-safe-FIX3.yml')
+          if not wf.exists():
+              raise RuntimeError('Missing FIX10 FIX3 workflow')
+
+          lines=wf.read_text(encoding='utf-8').splitlines()
+          steps=[]
+          i=0
+          while i<len(lines):
+              if not lines[i].startswith('      - name: '):
+                  i+=1
+                  continue
+              name=lines[i][len('      - name: '):].strip()
+              j=i+1
+              script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1
+                      block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '):
+                              break
+                          if raw.startswith('          '):
+                              block.append(raw[10:])
+                              k+=1
+                              continue
+                          if raw.strip()=='':
+                              block.append('')
+                              k+=1
+                              continue
+                          if raw.startswith('        '):
+                              break
+                          block.append(raw)
+                          k+=1
+                          continue
+                      script='\n'.join(block)+'\n'
+                      break
+                  j+=1
+              if script is not None:
+                  steps.append((name,script))
+              i=j if j>i else i+1
+
+          wanted=[
+              'Rebuild exact V3.4.86 FIX10 FIX2 source',
+              'Patch V3.4.86 FIX10 FIX3 Performance SQL Null Safe'
+          ]
+          for target in wanted:
+              for name,script in steps:
+                  if name==target:
+                      subprocess.run(
+                          ['bash','-euo','pipefail','-c',script],
+                          check=True,
+                          env=os.environ.copy()
+                      )
+                      break
+              else:
+                  raise RuntimeError('Missing replay step: '+target)
+
+          print('FIX10 FIX3 reconstructed')
+          PYREPLAY
+
+      - name: Patch V3.4.86 FIX10 FIX4 Global Value Colors
+        shell: bash
+        run: |
+          python3 - <<'PYFIX4'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+          db=db_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          def req(c,m):
+              if not c:
+                  raise RuntimeError(m)
+              print('OK:',m)
+
+          req('versionCode 152' in gradle,'FIX10 FIX3 versionCode')
+          req('versionName "3.4.86-dev-fix10-fix3-performance-sql-null-safe"' in gradle,'FIX10 FIX3 versionName')
+          req('DEV 3.4.86 FIX10 FIX3 SQL NULL SAFE' in main,'FIX10 FIX3 visible label')
+          req(re.search(r'DB_VERSION\s*=\s*18',db) is not None,'DB18')
+
+          gradle=gradle.replace('versionCode 152','versionCode 153',1)
+          gradle=gradle.replace(
+              'versionName "3.4.86-dev-fix10-fix3-performance-sql-null-safe"',
+              'versionName "3.4.86-dev-fix10-fix4-global-value-colors"',
+              1
+          )
+          main=main.replace(
+              'DEV 3.4.86 FIX10 FIX3 SQL NULL SAFE',
+              'DEV 3.4.86 FIX10 FIX4 GLOBAL COLORS'
+          )
+
+          def matching_brace(text,open_pos):
+              depth=0
+              ins=inc=esc=line=block=False
+              i=open_pos
+              while i<len(text):
+                  c=text[i]
+                  n=text[i+1] if i+1<len(text) else ''
+                  if line:
+                      if c=='\n': line=False
+                      i+=1; continue
+                  if block:
+                      if c=='*' and n=='/':
+                          block=False; i+=2; continue
+                      i+=1; continue
+                  if ins:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=='"': ins=False
+                      i+=1; continue
+                  if inc:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=="'": inc=False
+                      i+=1; continue
+                  if c=='/' and n=='/':
+                      line=True; i+=2; continue
+                  if c=='/' and n=='*':
+                      block=True; i+=2; continue
+                  if c=='"':
+                      ins=True; i+=1; continue
+                  if c=="'":
+                      inc=True; i+=1; continue
+                  if c=='{':
+                      depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0:
+                          return i
+                  i+=1
+              raise RuntimeError('Unbalanced braces')
+
+          sig='boolean styleAllScreenFinanceV3486Fix6(android.widget.TextView t)'
+          p=main.find(sig)
+          req(p>=0,'global financial formatter found')
+          o=main.find('{',p)
+          c=matching_brace(main,o)
+          body=main[p:c+1]
+
+          # FIX9 colored complete one-line TextViews. Remove that policy globally.
+          start=body.find('// Explicit one-line financial rows:')
+          end=body.find('boolean financeRelevant=',start)
+          req(start>=0 and end>start,'FIX9 whole-row one-line coloring block found')
+          body=body[:start] + '// FIX10 FIX4: labels white; only numeric financial values use semantic colors.\n                  ' + body[end:]
+
+          # Even if a renderer previously colored a whole row, reset the base to white.
+          anchor='android.text.SpannableString sp=new android.text.SpannableString(s);'
+          req(anchor in body,'Spannable base anchor found')
+          if 't.setTextColor(android.graphics.Color.WHITE);' not in body:
+              body=body.replace(
+                  anchor,
+                  't.setTextColor(android.graphics.Color.WHITE);\n                  '+anchor,
+                  1
+              )
+
+          old_rel='''low.contains("plusvalenz")||low.contains("minusvalenz")||
+                      low.contains("perdita")||low.contains("commission")||
+                      low.contains("ritenut")||low.contains("tobin")||
+                      low.contains("tassazione")||low.contains("costi fiscali")||'''
+          new_rel='''low.contains("plusvalenz")||low.contains("minusvalenz")||
+                      low.contains("perdita")||low.contains("guadagno/perdita")||
+                      low.contains("commission")||low.contains("ritenut")||
+                      low.contains("tobin")||low.contains("impost")||
+                      low.contains("tassazione")||low.contains("tasse")||
+                      low.contains("costi")||'''
+          req(old_rel in body,'financial relevance block found')
+          body=body.replace(old_rel,new_rel,1)
+
+          def replace_pattern(method,name,new_src):
+              marker='java.util.regex.Pattern '+name+'=java.util.regex.Pattern.compile('
+              a=method.find(marker)
+              if a<0:
+                  raise RuntimeError('Pattern not found: '+name)
+              b=method.find(');',a)
+              if b<0:
+                  raise RuntimeError('Pattern end not found: '+name)
+              return method[:a]+new_src+method[b+2:]
+
+          costs=r'''java.util.regex.Pattern costs=java.util.regex.Pattern.compile(
+                      "(?i)(Ritenuta(?:\\s+26%\\s+sui\\s+proventi|\\s+su\\s+plusvalenza(?:\\s*\\(26%\\))?)?"+
+                      "|Tobin\\s+Tax|Commissioni?|Imposta(?:\\s+su\\s+plusvalenza)?|Imposte?"+
+                      "|Tassazione(?:\\s+proventi)?|Tasse(?:/costi)?"+
+                      "|Costi(?:/tasse|/imposte(?:\\s+operazioni)?|\\s+fiscali(?:\\s+operazioni)?|\\s+totali)?"+
+                      "|Altri\\s+costi\\s+fiscali|Altre\\s+imposte)"+
+                      "[^0-9+\\-\\n]{0,64}([+\\-]?[0-9][0-9\\.,]*)\\s*(€|%)?"
+                  );'''
+          signed=r'''java.util.regex.Pattern signed=java.util.regex.Pattern.compile(
+                      "(?i)(P/L(?:\\s+(?:non\\s+realizzato|realizzato\\s+netto|realizzato\\s+lordo))?"+
+                      "|Guadagno/Perdita"+
+                      "|Rendimento(?:\\s+(?:annuale|YTD|reale|da\\s+inizio\\s+anno))?"+
+                      "|Risultato(?:\\s+(?:dopo\\s+perdita/minus|complessivo))?"+
+                      "|Plusvalenze\\s+realizzate|Proventi\\s+netti|Lordo|Netto)"+
+                      "\\s*:?\\s*([+\\-]?[0-9][0-9\\.,]*)\\s*(€|%)?"
+                  );'''
+          income=r'''java.util.regex.Pattern income=java.util.regex.Pattern.compile(
+                      "(?i)(Dividendi\\s+e\\s+cedole(?:\\s+lordi|\\s+incassati)?"+
+                      "|Div\\.|Dividendo|Dividendi|Cedola|Cedole"+
+                      "|Provento|Proventi(?:\\s+(?:lordi|netti))?(?:\\s+YTD)?"+
+                      "|Recupero\\s+fiscale(?:\\s+minus)?|Premi/Saveback|Premio|Saveback)"+
+                      "[^0-9+\\-\\n]{0,80}([+\\-]?[0-9][0-9\\.,]*)\\s*(€|%)?"
+                  );'''
+          loss=r'''java.util.regex.Pattern loss=java.util.regex.Pattern.compile(
+                      "(?i)(Minusvalenze?(?:\\s+(?:realizzate|generate|residue\\s+da\\s+recuperare))?"+
+                      "|Perdite?(?:\\s+realizzate)?|Perdita\\s*/\\s*minus|Minus)"+
+                      "[^0-9+\\-\\n]{0,64}([+\\-]?[0-9][0-9\\.,]*)\\s*(€|%)?"
+                  );'''
+
+          body=replace_pattern(body,'costs',costs)
+          body=replace_pattern(body,'signed',signed)
+          body=replace_pattern(body,'income',income)
+          body=replace_pattern(body,'loss',loss)
+
+          main=main[:p]+body+main[c+1:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          if db_path.read_bytes()!=db_before:
+              raise RuntimeError('DbHelper changed unexpectedly')
+
+          print('FIX10 FIX4 applied: labels white globally; only semantic amounts green/red')
+          PYFIX4
+
+      - name: Verify V3.4.86 FIX10 FIX4
+        shell: bash
+        run: |
+          python3 - <<'PYCHECK4'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+
+          def req(c,m):
+              if not c:
+                  raise RuntimeError(m)
+              print('OK:',m)
+
+          def matching_brace(text,open_pos):
+              depth=0
+              ins=inc=esc=line=block=False
+              i=open_pos
+              while i<len(text):
+                  c=text[i]
+                  n=text[i+1] if i+1<len(text) else ''
+                  if line:
+                      if c=='\n': line=False
+                      i+=1; continue
+                  if block:
+                      if c=='*' and n=='/':
+                          block=False; i+=2; continue
+                      i+=1; continue
+                  if ins:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=='"': ins=False
+                      i+=1; continue
+                  if inc:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=="'": inc=False
+                      i+=1; continue
+                  if c=='/' and n=='/':
+                      line=True; i+=2; continue
+                  if c=='/' and n=='*':
+                      block=True; i+=2; continue
+                  if c=='"':
+                      ins=True; i+=1; continue
+                  if c=="'":
+                      inc=True; i+=1; continue
+                  if c=='{':
+                      depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0:
+                          return i
+                  i+=1
+              raise RuntimeError('Unbalanced braces')
+
+          req('versionCode 153' in g,'versionCode 153')
+          req('versionName "3.4.86-dev-fix10-fix4-global-value-colors"' in g,'FIX10 FIX4 version')
+          req('DEV 3.4.86 FIX10 FIX4 GLOBAL COLORS' in s,'visible label')
+          req(re.search(r'DB_VERSION\s*=\s*18',d) is not None,'DB18 unchanged')
+
+          sig='boolean styleAllScreenFinanceV3486Fix6(android.widget.TextView t)'
+          p=s.find(sig)
+          req(p>=0,'global formatter preserved')
+          o=s.find('{',p)
+          c=matching_brace(s,o)
+          body=s[p:c+1]
+
+          req('// Explicit one-line financial rows:' not in body,'whole-row color policy removed')
+          req('t.setTextColor(android.graphics.Color.WHITE);' in body,'financial row base forced white')
+          req('SpannableString sp=new android.text.SpannableString(s);' in body,'span-based coloring active')
+          req('semanticAmountSpanV3483' in s,'amount-only span helper preserved')
+
+          for marker in [
+              'Ritenuta(?:\\\\s+26%\\\\s+sui\\\\s+proventi',
+              'Costi(?:/tasse',
+              '|Provento|Proventi',
+              '|Guadagno/Perdita',
+              'Minusvalenze?'
+          ]:
+              req(marker in body,'global semantic marker '+marker)
+
+          order=[
+              'applySemanticPatternV3483(sp,s,signed,0);',
+              'applySemanticPatternV3483(sp,s,income,2);',
+              'applySemanticPatternV3483(sp,s,loss,3);',
+              'applySemanticPatternV3483(sp,s,costs,1);'
+          ]
+          pos=[body.find(x) for x in order]
+          req(all(x>=0 for x in pos) and pos==sorted(pos),'cost/tax colors override income words')
+
+          # Preserve FIX3 exact crash correction.
+          ps='double performanceCostsForPeriod(String broker,int year,int month,String day)'
+          pp=s.find(ps)
+          req(pp>=0,'performanceCostsForPeriod preserved')
+          po=s.find('{',pp)
+          pc=matching_brace(s,po)
+          perf_costs=s[pp:pc+1]
+          req(
+              'boolean total=(broker==null)||TOTAL.equals(broker);' in perf_costs,
+              'Performance Totale remains SQL null-safe'
+          )
+
+          # Preserve FIX2 stability.
+          sumsig='void addPerformanceCostsSummary(double gross,double costs,boolean incomplete)'
+          sp=s.find(sumsig)
+          req(sp>=0,'Performance summary preserved')
+          so=s.find('{',sp)
+          sc=matching_brace(s,so)
+          summary=s[sp:sc+1]
+          req('applyGlobalSemanticColorsV3483(c);' not in summary,'no immediate Performance recursive rescan')
+
+          req('void scheduleGlobalSemanticColorsV3483()' in s,'single delayed global formatter preserved')
+          req('content.postDelayed(new Runnable()' in s,'delayed formatting preserved')
+
+          for marker in [
+              '"Q.tà "+quantityItV3470(r.qty)',
+              'decimalInputItV3470(r.pmc)+" €"',
+              'decimalInputItV3470(r.price)+" €"',
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'V3474_FIX4_DIRECT_OPEN_POSITION_HOME_TOTAL',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+              'applyHistoricalUiSafetyV3462',
+              'Performance = proventi lordi + P/L realizzato lordo.'
+          ]:
+              req(marker in s or marker in d,'preserved '+marker)
+
+          print('FIX10 FIX4 verified: global white labels + value-only semantic colors')
+          PYCHECK4
+
+      - name: Build signed V3.4.86 FIX10 FIX4 FIX1 APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.86 FIX10 FIX4 FIX1 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "FIX10 FIX4 FIX1 signed APK verified"
+
+      - name: Upload signed V3.4.86 FIX10 FIX4 FIX1 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3486-FIX10-FIX4-FIX1-GLOBAL-VALUE-COLORS-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
