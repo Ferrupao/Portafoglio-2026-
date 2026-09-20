@@ -1,0 +1,195 @@
+name: Build Portafoglio 2026 V3.4.86 FIX6 FIX1 Global Colors No PAC
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3486-dev-fix6-global-colors-no-pac-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix6-global-colors-no-pac.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix5-neutral-own-capital.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild FIX5 and apply corrected FIX6 patch
+        shell: bash
+        run: |
+          python3 - <<'PYFIX1'
+          from pathlib import Path
+          import os, subprocess
+
+          workflow_path=Path('.github/workflows/build-portafoglio-v3486-dev-fix6-global-colors-no-pac.yml')
+          if not workflow_path.exists():
+              raise RuntimeError(f'Missing workflow: {workflow_path}')
+
+          lines=workflow_path.read_text(encoding='utf-8').splitlines()
+          parsed=[]
+          i=0
+          while i<len(lines):
+              line=lines[i]
+              if not line.startswith('      - name: '):
+                  i+=1
+                  continue
+              name=line[len('      - name: '):].strip()
+              j=i+1
+              script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1
+                      block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '):
+                              break
+                          if raw.startswith('          '):
+                              block.append(raw[10:])
+                              k+=1
+                              continue
+                          if raw.strip()=='':
+                              block.append('')
+                              k+=1
+                              continue
+                          if raw.startswith('        '):
+                              break
+                          block.append(raw)
+                          k+=1
+                      script='\n'.join(block)+'\n'
+                      break
+                  j+=1
+              if script is not None:
+                  parsed.append((name,script))
+              i=j if j>i else i+1
+
+          start='Rebuild exact V3.4.86 FIX5 source'
+          end='Verify V3.4.86 FIX6 regressions'
+          started=False
+          reached=False
+
+          for name,script in parsed:
+              if name==start:
+                  started=True
+              if not started:
+                  continue
+
+              if name=='Patch V3.4.86 FIX6 global colors and remove PAC from UI':
+                  marker_start='# PAC-only buttons must disappear completely.'
+                  marker_end="anchor='String s=q.toString();'"
+                  a=script.find(marker_start)
+                  b=script.find(marker_end,a)
+                  if a<0 or b<0:
+                      raise RuntimeError('FIX6 button block markers not found')
+
+                  replacement=r'''# PAC-only buttons must disappear completely.
+          # FIX1: match the Button early-return regardless of whitespace/indentation.
+          import re
+          button_guard_re=re.compile(
+              r'if\s*\(\s*t\s+instanceof\s+android\.widget\.Button\s*\)\s*return\s*;'
+          )
+          new_button='''if(t instanceof android.widget.Button){
+                      CharSequence bq=t.getText();
+                      if(bq!=null&&bq.toString().toLowerCase(java.util.Locale.ROOT).contains("pac")){
+                          t.setVisibility(android.view.View.GONE);
+                      }
+                      return;
+                  }'''
+          if button_guard_re.search(method):
+              method=button_guard_re.sub(new_button,method,count=1)
+          elif 'bq.toString().toLowerCase' not in method:
+              raise RuntimeError('Button guard not found in global semantic formatter')
+
+          '''
+                  script=script[:a]+replacement+script[b:]
+                  print('FIX1: replaced fragile exact Button guard with regex guard')
+
+              print(f'===== RUN {name} =====')
+              subprocess.run(
+                  ['bash','-euo','pipefail','-c',script],
+                  check=True,
+                  env=os.environ.copy()
+              )
+
+              if name==end:
+                  reached=True
+                  break
+
+          if not started or not reached:
+              raise RuntimeError('Could not complete corrected FIX6 replay')
+          print('V3.4.86 FIX6 FIX1 source and verification completed')
+          PYFIX1
+
+      - name: Build signed V3.4.86 FIX6 FIX1 APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed V3.4.86 FIX6 FIX1 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "V3.4.86 FIX6 FIX1 signed APK verified"
+
+      - name: Upload signed V3.4.86 FIX6 FIX1 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3486-FIX6-FIX1-GLOBAL-COLORS-NO-PAC-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
