@@ -1,0 +1,278 @@
+name: Build Portafoglio 2026 V3.4.86 FIX10 FIX8.6 Proventi Taxes Semantic Colors
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3486-dev-fix10-fix8-6-proventi-taxes-semantic-colors.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix10-fix8-5-proventi-zero-taxes-colors.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix10-fix8-4-portafogli-dashboard-colors-FIX1.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix10-fix8-3-portfolio-final-FIX2.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact FIX8.5 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          wf=Path('.github/workflows/build-portafoglio-v3486-dev-fix10-fix8-5-proventi-zero-taxes-colors.yml')
+          if not wf.exists():
+              raise RuntimeError('Missing FIX8.5 workflow')
+
+          lines=wf.read_text(encoding='utf-8').splitlines()
+          steps=[]
+          i=0
+          while i<len(lines):
+              if not lines[i].startswith('      - name: '):
+                  i+=1
+                  continue
+              name=lines[i][len('      - name: '):].strip()
+              j=i+1
+              script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1
+                      block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '):
+                              break
+                          if raw.startswith('          '):
+                              block.append(raw[10:])
+                              k+=1
+                              continue
+                          if raw.strip()=='':
+                              block.append('')
+                              k+=1
+                              continue
+                          if raw.startswith('        '):
+                              break
+                          block.append(raw)
+                          k+=1
+                      script='\n'.join(block)+'\n'
+                      break
+                  j+=1
+              if script is not None:
+                  steps.append((name,script))
+              i=j if j>i else i+1
+
+          for target in [
+              'Rebuild exact FIX8.4 FIX1 source',
+              'Patch FIX8.5 Proventi zero taxes colors'
+          ]:
+              for name,script in steps:
+                  if name==target:
+                      subprocess.run(
+                          ['bash','-euo','pipefail','-c',script],
+                          check=True,
+                          env=os.environ.copy()
+                      )
+                      break
+              else:
+                  raise RuntimeError('Missing replay step: '+target)
+
+          print('FIX8.5 source reconstructed')
+          PYREPLAY
+
+      - name: Patch FIX8.6 exact tasse semantic rules
+        shell: bash
+        run: |
+          python3 - <<'PYFIX86'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          def req(c,m):
+              if not c:
+                  raise RuntimeError(m)
+              print('OK:',m)
+
+          req('versionCode 162' in gradle,'FIX8.5 versionCode')
+          req('versionName "3.4.86-dev-fix10-fix8-5-proventi-zero-taxes-colors"' in gradle,'FIX8.5 versionName')
+          req('DEV 3.4.86 FIX10 FIX8.5 PROVENTI COLORS' in main,'FIX8.5 visible label')
+
+          gradle=gradle.replace('versionCode 162','versionCode 163',1)
+          gradle=gradle.replace(
+              'versionName "3.4.86-dev-fix10-fix8-5-proventi-zero-taxes-colors"',
+              'versionName "3.4.86-dev-fix10-fix8-6-proventi-taxes-semantic-colors"',
+              1
+          )
+          main=main.replace(
+              'DEV 3.4.86 FIX10 FIX8.5 PROVENTI COLORS',
+              'DEV 3.4.86 FIX10 FIX8.6 PROVENTI TAX COLORS'
+          )
+
+          # Root cause:
+          # "Tasse YTD" / "Tasse mese" were not recognized by the deterministic
+          # cost keyword set, so the original red assigned at creation survived.
+          old='''"tassazione","costi/tasse","costi fiscali","altre tasse",'''
+          new='''"tassazione","tasse","costi/tasse","costi fiscali","altre tasse",'''
+          req(old in main,'deterministic cost keyword anchor found')
+          main=main.replace(old,new,1)
+
+          # Also cover KPI implementations where label and value are separate TextViews.
+          old2='''if(textHasAnyV3492(low,"ritenut","tobin","commission","impost","tassazione","costi")){'''
+          new2='''if(textHasAnyV3492(low,"ritenut","tobin","commission","impost","tassazione","tasse","costi")){'''
+          req(old2 in main,'KPI cost keyword anchor found')
+          main=main.replace(old2,new2,1)
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          if db_path.read_bytes()!=db_before:
+              raise RuntimeError('DbHelper changed unexpectedly')
+
+          print('FIX8.6 applied: Tasse recognized as cost semantics')
+          PYFIX86
+
+      - name: Verify FIX8.6
+        shell: bash
+        run: |
+          python3 - <<'PYCHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+
+          def req(c,m):
+              if not c:
+                  raise RuntimeError(m)
+              print('OK:',m)
+
+          req('versionCode 163' in g,'versionCode 163')
+          req('versionName "3.4.86-dev-fix10-fix8-6-proventi-taxes-semantic-colors"' in g,'FIX8.6 versionName')
+          req('DEV 3.4.86 FIX10 FIX8.6 PROVENTI TAX COLORS' in s,'FIX8.6 visible label')
+          req(re.search(r'DB_VERSION\s*=\s*18',d) is not None,'DB18 unchanged')
+
+          req('"tassazione","tasse","costi/tasse","costi fiscali","altre tasse"' in s,
+              'deterministic formatter recognizes tasse')
+          req('textHasAnyV3492(low,"ritenut","tobin","commission","impost","tassazione","tasse","costi")' in s,
+              'KPI formatter recognizes tasse')
+
+          # The existing cost semantic already guarantees zero white / non-zero red.
+          req('color=Math.abs(n)<=0.0000001' in s,'zero cost rule present')
+          req('?android.graphics.Color.WHITE:C_RED' in s,'zero white / cost red rule present')
+
+          # Preserve all fixes already confirmed on device.
+          for marker in [
+              r'non\\s+realizzato',
+              r'proventi?(?:\\s+(?:lordi|netti))?',
+              'compositionIncomeV3497',
+              'boolean isTradeRepublicBrokerV3496',
+              'grossPerformanceByDateTradeRepublicV3496',
+              'performanceMapMonthV3496',
+              'performanceMapYearV3496',
+              'homeColorSessionV3493',
+              'scheduleHomeColorsV3493',
+              'applyHomeColorsV3493'
+          ]:
+              req(marker in s,'preserved '+marker)
+
+          req('if(sc.contains("performance"))return false;' in s,
+              'Performance still excluded from Portafogli color pass')
+
+          for marker in [
+              'repairTradeRepublicPricesV3477',
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+              'applyHistoricalUiSafetyV3462',
+              'Performance = proventi lordi + P/L realizzato lordo.'
+          ]:
+              req(marker in s or marker in d,'preserved '+marker)
+
+          print('FIX8.6 verified')
+          PYCHECK
+
+      - name: Build signed FIX8.6 APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed FIX8.6 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "FIX8.6 signed APK verified"
+
+      - name: Upload signed FIX8.6 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3486-FIX10-FIX8-6-PROVENTI-TAXES-SEMANTIC-COLORS-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
