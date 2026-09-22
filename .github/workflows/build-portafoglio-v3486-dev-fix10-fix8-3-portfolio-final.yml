@@ -1,0 +1,595 @@
+name: Build Portafoglio 2026 V3.4.86 FIX10 FIX8.3 Portfolio Final
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-portafoglio-v3486-dev-fix10-fix8-3-portfolio-final.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix10-fix8-2-trade-republic-date-performance.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix10-fix8-1-trade-republic-performance.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix10-fix8-portafogli-all-sections-colors.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix10-fix7-home-all-sections-colors.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact FIX8.2 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          wf=Path('.github/workflows/build-portafoglio-v3486-dev-fix10-fix8-2-trade-republic-date-performance.yml')
+          if not wf.exists():
+              raise RuntimeError('Missing FIX8.2 workflow')
+
+          lines=wf.read_text(encoding='utf-8').splitlines()
+          steps=[]
+          i=0
+          while i<len(lines):
+              if not lines[i].startswith('      - name: '):
+                  i+=1
+                  continue
+              name=lines[i][len('      - name: '):].strip()
+              j=i+1
+              script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1
+                      block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '):
+                              break
+                          if raw.startswith('          '):
+                              block.append(raw[10:])
+                              k+=1
+                              continue
+                          if raw.strip()=='':
+                              block.append('')
+                              k+=1
+                              continue
+                          if raw.startswith('        '):
+                              break
+                          block.append(raw)
+                          k+=1
+                          continue
+                      script='\n'.join(block)+'\n'
+                      break
+                  j+=1
+              if script is not None:
+                  steps.append((name,script))
+              i=j if j>i else i+1
+
+          for target in [
+              'Rebuild exact FIX8.1 source',
+              'Patch FIX8.2 Trade Republic performance date formats'
+          ]:
+              for name,script in steps:
+                  if name==target:
+                      subprocess.run(
+                          ['bash','-euo','pipefail','-c',script],
+                          check=True,
+                          env=os.environ.copy()
+                      )
+                      break
+              else:
+                  raise RuntimeError('Missing replay step: '+target)
+
+          print('FIX8.2 reconstructed')
+          PYREPLAY
+
+      - name: Patch FIX8.3 Portfolio final colors and Trade Republic Performance
+        shell: bash
+        run: |
+          python3 - <<'PYFIX83'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+          db=db_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+
+          def req(c,m):
+              if not c:
+                  raise RuntimeError(m)
+              print('OK:',m)
+
+          req('versionCode 159' in gradle,'FIX8.2 versionCode')
+          req('versionName "3.4.86-dev-fix10-fix8-2-trade-republic-date-performance"' in gradle,'FIX8.2 versionName')
+          req('DEV 3.4.86 FIX10 FIX8.2 TR DATE PERF' in main,'FIX8.2 visible label')
+
+          gradle=gradle.replace('versionCode 159','versionCode 160',1)
+          gradle=gradle.replace(
+              'versionName "3.4.86-dev-fix10-fix8-2-trade-republic-date-performance"',
+              'versionName "3.4.86-dev-fix10-fix8-3-portfolio-final"',
+              1
+          )
+          main=main.replace(
+              'DEV 3.4.86 FIX10 FIX8.2 TR DATE PERF',
+              'DEV 3.4.86 FIX10 FIX8.3 PORTFOLIO FINAL'
+          )
+
+          def matching_brace(text,open_pos):
+              depth=0
+              ins=inc=esc=line=block=False
+              i=open_pos
+              while i<len(text):
+                  c=text[i]
+                  n=text[i+1] if i+1<len(text) else ''
+                  if line:
+                      if c=='\n': line=False
+                      i+=1; continue
+                  if block:
+                      if c=='*' and n=='/':
+                          block=False; i+=2; continue
+                      i+=1; continue
+                  if ins:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=='"': ins=False
+                      i+=1; continue
+                  if inc:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=="'": inc=False
+                      i+=1; continue
+                  if c=='/' and n=='/':
+                      line=True; i+=2; continue
+                  if c=='/' and n=='*':
+                      block=True; i+=2; continue
+                  if c=='"':
+                      ins=True; i+=1; continue
+                  if c=="'":
+                      inc=True; i+=1; continue
+                  if c=='{':
+                      depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced braces')
+
+          def method_slice(text,signature):
+              p=text.find(signature)
+              if p<0:
+                  raise RuntimeError('Missing method '+signature)
+              o=text.find('{',p)
+              c=matching_brace(text,o)
+              return p,c,text[p:c+1]
+
+          # ================================================================
+          # 1) DIRECT KPI COLOR SOURCE: green only the wealth AMOUNTS.
+          #    No broad/global recoloring.
+          # ================================================================
+
+          old_summary='''LinearLayout summary=card();summary.addView(sectionTitle("Riepilogo portafoglio"));LinearLayout r1=hrow();r1.addView(kpi("Valore titoli",titlesText),new LinearLayout.LayoutParams(0,-2,1));gap(r1,6);r1.addView(kpi("Liquidità",cashText),new LinearLayout.LayoutParams(0,-2,1));summary.addView(r1);gap(summary,6);LinearLayout r2=hrow();r2.addView(kpi("Patrimonio totale",value==0?"non inserito":euro.format(value)+" €"),new LinearLayout.LayoutParams(0,-2,1));gap(r2,6);r2.addView(kpiValueColor("Proventi lordi YTD",euro.format(gross)+" €",C_GREEN),new LinearLayout.LayoutParams(0,-2,1));summary.addView(r2);Button perf=primaryBtn("Performance  ›");perf.setOnClickListener(v->showPerformance(1,Calendar.getInstance().get(Calendar.MONTH)+1,null));summary.addView(perf);content.addView(summary);'''
+          new_summary='''LinearLayout summary=card();summary.addView(sectionTitle("Riepilogo portafoglio"));LinearLayout r1=hrow();r1.addView(kpiValueColor("Valore titoli",titlesText,C_GREEN),new LinearLayout.LayoutParams(0,-2,1));gap(r1,6);r1.addView(kpi("Liquidità",cashText),new LinearLayout.LayoutParams(0,-2,1));summary.addView(r1);gap(summary,6);LinearLayout r2=hrow();r2.addView(kpiValueColor("Patrimonio totale",value==0?"non inserito":euro.format(value)+" €",C_GREEN),new LinearLayout.LayoutParams(0,-2,1));gap(r2,6);r2.addView(kpiValueColor("Proventi lordi YTD",euro.format(gross)+" €",C_GREEN),new LinearLayout.LayoutParams(0,-2,1));summary.addView(r2);Button perf=primaryBtn("Performance  ›");perf.setOnClickListener(v->showPerformance(1,Calendar.getInstance().get(Calendar.MONTH)+1,null));summary.addView(perf);content.addView(summary);'''
+          req(old_summary in main,'Dashboard summary exact source found')
+          main=main.replace(old_summary,new_summary,1)
+
+          # Home: direct KPI creation should also use green amount semantics.
+          old_home_p='TextView patrimonioKpi=kpiPrimary("Patrimonio totale",totalValue==0?"non inserito":euro.format(totalValue)+" €");'
+          new_home_p='TextView patrimonioKpi=kpiValueColor("Patrimonio totale",totalValue==0?"non inserito":euro.format(totalValue)+" €",C_GREEN);'
+          req(old_home_p in main,'Home Patrimonio KPI found')
+          main=main.replace(old_home_p,new_home_p,1)
+
+          old_home_v='r3.addView(kpi("Valore titoli",titlesText),new LinearLayout.LayoutParams(0,-2,1));'
+          new_home_v='r3.addView(kpiValueColor("Valore titoli",titlesText,C_GREEN),new LinearLayout.LayoutParams(0,-2,1));'
+          req(old_home_v in main,'Home Valore titoli KPI found')
+          main=main.replace(old_home_v,new_home_v,1)
+
+          # Portafogli delayed formatter: classify wealth cards as green,
+          # otherwise it would override the direct KPI color back to white.
+          p,c,mode=method_slice(main,'int portfoliosGroupModeV3494(String labels)')
+          anchor='String low=labels.toLowerCase(java.util.Locale.ROOT);'
+          req(anchor in mode,'Portafogli group low anchor')
+          mode=mode.replace(
+              anchor,
+              anchor+'''
+                  if(textHasAnyV3492(
+                      low,
+                      "patrimonio totale","valore titoli","valore attuale titoli"
+                  ))return 1;''',
+              1
+          )
+          main=main[:p]+mode+main[c+1:]
+
+          # Home delayed formatter: same explicit wealth semantics.
+          p,c,home_mode=method_slice(main,'int homeModeV3493(String raw)')
+          # Insert before any neutral/general return logic.
+          home_open=home_mode.find('{')
+          insertion='''
+                  String wealthLowV3496=raw==null?"":raw.toLowerCase(java.util.Locale.ROOT);
+                  if(textHasAnyV3492(
+                      wealthLowV3496,
+                      "patrimonio totale","valore titoli","valore attuale titoli"
+                  ))return 1;
+          '''
+          home_mode=home_mode[:home_open+1]+insertion+home_mode[home_open+1:]
+          main=main[:p]+home_mode+main[c+1:]
+
+          # Inline "Valore attuale titoli: 671,95 €" is one TextView.
+          # Keep label white and color only the amount green.
+          p,c,style=method_slice(main,'void stylePortfoliosTextV3494(android.widget.TextView t)')
+          span_anchor='''        // P/L and other signed results.'''
+          req(span_anchor in style,'Portafogli inline span anchor')
+          wealth_span=r'''
+                  java.util.regex.Matcher wealthV3496=java.util.regex.Pattern.compile(
+                      "(?i)(?:patrimonio\\s+totale|valore\\s+(?:attuale\\s+)?titoli)\\s*:?\\s*([+\\-]?[0-9][0-9\\.,]*)\\s*€"
+                  ).matcher(s);
+                  while(wealthV3496.find()){
+                      double n=parseSemanticNumberV3483(wealthV3496.group(1));
+                      semanticAmountSpanV3483(
+                          sp,
+                          wealthV3496.start(1),
+                          wealthV3496.end(),
+                          Math.abs(n)<=0.0000001?android.graphics.Color.WHITE:C_GREEN
+                      );
+                  }
+
+          '''
+          style=style.replace(span_anchor,wealth_span+span_anchor,1)
+          main=main[:p]+style+main[c+1:]
+
+          # ================================================================
+          # 2) TRADE REPUBLIC PERFORMANCE: use the same actual income rows
+          #    already used successfully by Dashboard / Proventi.
+          #
+          # Diagnostic finding:
+          # showPerformance does NOT call datedIncomeMonth(); it calls the older
+          # grossPerformanceByDate/grossPerformanceForMonth path. Therefore FIX8.2
+          # corrected the wrong data path. FIX8.3 branches only Trade Republic
+          # to a canonical map built from income_records + realized SELL P/L.
+          # Directa stays on the existing proven Performance path.
+          # ================================================================
+
+          helpers=r'''
+              // ===== FIX8.3 TRADE REPUBLIC PERFORMANCE ACTUAL DATA PATH =====
+              boolean isTradeRepublicBrokerV3496(String broker){
+                  if(broker==null)return false;
+                  String k=performanceBrokerKeyV3495(broker);
+                  return k.contains("traderepublic") ||
+                         (k.contains("trade")&&k.contains("republic"));
+              }
+
+              String canonicalPerformanceDateV3496(String raw){
+                  if(raw==null)return null;
+                  String dt=raw.trim();
+
+                  java.util.regex.Matcher iso=java.util.regex.Pattern.compile(
+                      "^(\\d{4})[-/](\\d{1,2})[-/](\\d{1,2})"
+                  ).matcher(dt);
+                  if(iso.find()){
+                      int y=Integer.parseInt(iso.group(1));
+                      int m=Integer.parseInt(iso.group(2));
+                      int d=Integer.parseInt(iso.group(3));
+                      return String.format(java.util.Locale.US,"%04d-%02d-%02d",y,m,d);
+                  }
+
+                  java.util.regex.Matcher it=java.util.regex.Pattern.compile(
+                      "^(\\d{1,2})[-/](\\d{1,2})[-/](\\d{4})"
+                  ).matcher(dt);
+                  if(it.find()){
+                      int d=Integer.parseInt(it.group(1));
+                      int m=Integer.parseInt(it.group(2));
+                      int y=Integer.parseInt(it.group(3));
+                      return String.format(java.util.Locale.US,"%04d-%02d-%02d",y,m,d);
+                  }
+
+                  return null;
+              }
+
+              void addPerformanceMapValueV3496(
+                  java.util.TreeMap<String,Double> map,
+                  String rawDate,
+                  double value
+              ){
+                  String key=canonicalPerformanceDateV3496(rawDate);
+                  if(key==null)return;
+                  Double old=map.get(key);
+                  map.put(key,(old==null?0.0:old)+value);
+              }
+
+              java.util.TreeMap<String,Double> grossPerformanceByDateTradeRepublicV3496(String broker){
+                  java.util.TreeMap<String,Double> out=new java.util.TreeMap<>();
+
+                  // Income rows: exactly the source already visible in
+                  // Dashboard "Proventi netti" and Composizione proventi.
+                  Cursor ci=incomeCursorForBroker(broker);
+                  try{
+                      int di=ci.getColumnIndex("date");
+                      int gi=ci.getColumnIndex("gross");
+                      while(ci.moveToNext()){
+                          if(historicalAggregateRow(ci))continue;
+                          if(di<0||gi<0||ci.isNull(di)||ci.isNull(gi))continue;
+                          addPerformanceMapValueV3496(
+                              out,
+                              ci.getString(di),
+                              ci.getDouble(gi)
+                          );
+                      }
+                  }finally{
+                      ci.close();
+                  }
+
+                  // Realized P/L: keep the Performance definition
+                  // "proventi lordi + P/L realizzato lordo".
+                  android.database.Cursor ct=null;
+                  try{
+                      ct=db.getReadableDatabase().rawQuery(
+                          "SELECT broker,date,trade_type,realized_pl_gross FROM trade_records",
+                          null
+                      );
+                      String wanted=performanceBrokerKeyV3495(broker);
+                      while(ct.moveToNext()){
+                          String br=ct.isNull(0)?"":ct.getString(0);
+                          if(!performanceBrokerKeyV3495(br).equals(wanted))continue;
+
+                          String type=ct.isNull(2)?"":ct.getString(2);
+                          if(!"SELL".equalsIgnoreCase(type))continue;
+                          if(ct.isNull(1)||ct.isNull(3))continue;
+
+                          addPerformanceMapValueV3496(
+                              out,
+                              ct.getString(1),
+                              ct.getDouble(3)
+                          );
+                      }
+                  }catch(Exception ignored){
+                      // Income data must remain visible even if an older DB
+                      // has no realized_pl_gross column.
+                  }finally{
+                      if(ct!=null)ct.close();
+                  }
+
+                  return out;
+              }
+
+              double performanceMapMonthV3496(
+                  java.util.TreeMap<String,Double> map,
+                  int year,
+                  int month
+              ){
+                  double total=0;
+                  for(java.util.Map.Entry<String,Double> e:map.entrySet()){
+                      if(performanceYear(e.getKey())==year &&
+                         performanceMonth(e.getKey())==month){
+                          total+=e.getValue();
+                      }
+                  }
+                  return total;
+              }
+
+              double performanceMapYearV3496(
+                  java.util.TreeMap<String,Double> map,
+                  int year
+              ){
+                  double total=0;
+                  for(java.util.Map.Entry<String,Double> e:map.entrySet()){
+                      if(performanceYear(e.getKey())==year){
+                          total+=e.getValue();
+                      }
+                  }
+                  return total;
+              }
+          '''
+
+          last=main.rfind('}')
+          req(last>=0,'MainActivity closing brace')
+          main=main[:last]+'\n'+helpers+'\n'+main[last:]
+
+          p,c,perf=method_slice(main,'void showPerformance(int mode,int year,int month,String selectedDay)')
+
+          old_data='TreeMap<String,Double> data=grossPerformanceByDate(broker);'
+          new_data='TreeMap<String,Double> data=isTradeRepublicBrokerV3496(broker)?grossPerformanceByDateTradeRepublicV3496(broker):grossPerformanceByDate(broker);'
+          req(old_data in perf,'Performance date-map call found')
+          perf=perf.replace(old_data,new_data,1)
+
+          old_month='double total=grossPerformanceForMonth(broker,viewYear,viewMonth);'
+          new_month='double total=isTradeRepublicBrokerV3496(broker)?performanceMapMonthV3496(data,viewYear,viewMonth):grossPerformanceForMonth(broker,viewYear,viewMonth);'
+          req(old_month in perf,'Performance month total call found')
+          perf=perf.replace(old_month,new_month,1)
+
+          old_year='double yearTotal=grossPerformanceForYear(broker,viewYear);'
+          new_year='double yearTotal=isTradeRepublicBrokerV3496(broker)?performanceMapYearV3496(data,viewYear):grossPerformanceForYear(broker,viewYear);'
+          req(old_year in perf,'Performance year total call found')
+          perf=perf.replace(old_year,new_year,1)
+
+          old_month_card='double mt=grossPerformanceForMonth(broker,viewYear,mm);'
+          new_month_card='double mt=isTradeRepublicBrokerV3496(broker)?performanceMapMonthV3496(data,viewYear,mm):grossPerformanceForMonth(broker,viewYear,mm);'
+          req(old_month_card in perf,'Performance annual month-card total call found')
+          perf=perf.replace(old_month_card,new_month_card,1)
+
+          main=main[:p]+perf+main[c+1:]
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          if db_path.read_bytes()!=db_before:
+              raise RuntimeError('DbHelper changed unexpectedly')
+
+          print('FIX8.3 applied: direct wealth colors + actual Trade Republic Performance data path')
+          PYFIX83
+
+      - name: Verify FIX8.3 Portfolio final
+        shell: bash
+        run: |
+          python3 - <<'PYCHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+
+          def req(c,m):
+              if not c:
+                  raise RuntimeError(m)
+              print('OK:',m)
+
+          req('versionCode 160' in g,'versionCode 160')
+          req('versionName "3.4.86-dev-fix10-fix8-3-portfolio-final"' in g,'FIX8.3 versionName')
+          req('DEV 3.4.86 FIX10 FIX8.3 PORTFOLIO FINAL' in s,'FIX8.3 visible label')
+          req(re.search(r'DB_VERSION\s*=\s*18',d) is not None,'DB18 unchanged')
+
+          # Direct-source wealth coloring.
+          req('kpiValueColor("Valore titoli",titlesText,C_GREEN)' in s,
+              'Dashboard Valore titoli amount green')
+          req('kpiValueColor("Patrimonio totale",value==0?"non inserito":euro.format(value)+" €",C_GREEN)' in s,
+              'Dashboard Patrimonio amount green')
+          req('TextView patrimonioKpi=kpiValueColor("Patrimonio totale"' in s,
+              'Home Patrimonio amount green')
+          req('kpiValueColor("Valore titoli",titlesText,C_GREEN)' in s,
+              'Home Valore titoli amount green')
+          req('"patrimonio totale","valore titoli","valore attuale titoli"' in s,
+              'delayed formatter wealth classification green')
+          req('wealthV3496' in s,'inline Valore attuale titoli amount-only green formatter')
+
+          # Trade Republic Performance now uses the working income source.
+          for marker in [
+              'boolean isTradeRepublicBrokerV3496',
+              'String canonicalPerformanceDateV3496',
+              'grossPerformanceByDateTradeRepublicV3496',
+              'Cursor ci=incomeCursorForBroker(broker)',
+              'if(historicalAggregateRow(ci))continue;',
+              'SELECT broker,date,trade_type,realized_pl_gross FROM trade_records',
+              'performanceMapMonthV3496',
+              'performanceMapYearV3496',
+              'isTradeRepublicBrokerV3496(broker)?grossPerformanceByDateTradeRepublicV3496(broker):grossPerformanceByDate(broker)',
+              'isTradeRepublicBrokerV3496(broker)?performanceMapMonthV3496(data,viewYear,viewMonth):grossPerformanceForMonth(broker,viewYear,viewMonth)',
+              'isTradeRepublicBrokerV3496(broker)?performanceMapYearV3496(data,viewYear):grossPerformanceForYear(broker,viewYear)'
+          ]:
+              req(marker in s,'Performance marker '+marker)
+
+          # Critical point: Directa remains on the exact old path after the colon.
+          req(':grossPerformanceByDate(broker)' in s,'Directa date Performance path preserved')
+          req(':grossPerformanceForMonth(broker,viewYear,viewMonth)' in s,'Directa month Performance path preserved')
+          req(':grossPerformanceForYear(broker,viewYear)' in s,'Directa year Performance path preserved')
+
+          # Existing Performance safety.
+          ps='double performanceCostsForPeriod(String broker,int year,int month,String day)'
+          pp=s.find(ps)
+          req(pp>=0,'Performance cost engine preserved')
+          perf=s[pp:pp+9000]
+          req('boolean total=(broker==null)||TOTAL.equals(broker);' in perf,
+              'Performance Totale null-safe preserved')
+
+          # Existing broker resolver and date support.
+          for marker in [
+              'String performanceBrokerV3495',
+              'performanceBrokerV3495(brokerFilter())',
+              'wanted.contains("traderepublic")',
+              'boolean incomeRowForYearMonth(Cursor c,int year,int month)',
+              '"^(\\\\d{1,2})[-/](\\\\d{1,2})[-/](\\\\d{4})"'
+          ]:
+              req(marker in s,'preserved '+marker)
+
+          # Home/Portafogli local engines still present; no global reset added.
+          for marker in [
+              'homeColorSessionV3493',
+              'portfoliosColorSessionV3494',
+              'stylePortfoliosTextV3494',
+              'stylePortfoliosKpiGroupV3494'
+          ]:
+              req(marker in s,'preserved '+marker)
+
+          # Data/accounting protections.
+          for marker in [
+              'repairTradeRepublicPricesV3477',
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+              'applyHistoricalUiSafetyV3462',
+              'Performance = proventi lordi + P/L realizzato lordo.'
+          ]:
+              req(marker in s or marker in d,'preserved '+marker)
+
+          print('FIX8.3 verified: Portfolio colors deterministic; Trade Republic Performance uses real income data; Directa unchanged')
+          PYCHECK
+
+      - name: Build signed FIX8.3 APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signed FIX8.3 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "FIX8.3 signed APK verified"
+
+      - name: Upload signed FIX8.3 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3486-FIX10-FIX8-3-PORTFOLIO-FINAL-SIGNED-APK
+          path: android-project-v3460/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
