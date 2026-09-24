@@ -1,0 +1,230 @@
+name: Build Portafoglio 2026 V3.4.86 FIX10 FIX8.9 FIX1 Operazioni Summary Colors
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/PORTAFOGLIO-2026-FIX8.9-CORRETTO-V2.yml"
+      - ".github/workflows/FIX8.9-OPERAZIONI-SUMMARY-COLORS.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix10-fix8-7-clean-stable-rebuild.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact FIX8.9 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          wf=Path('.github/workflows/FIX8.9-OPERAZIONI-SUMMARY-COLORS.yml')
+          if not wf.exists():
+              raise RuntimeError('Missing FIX8.9 workflow')
+
+          lines=wf.read_text(encoding='utf-8').splitlines()
+          steps=[]
+          i=0
+
+          while i<len(lines):
+              if not lines[i].startswith('      - name: '):
+                  i+=1
+                  continue
+
+              name=lines[i][len('      - name: '):].strip()
+              j=i+1
+              script=None
+
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1
+                      block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '):
+                              break
+                          if raw.startswith('          '):
+                              block.append(raw[10:])
+                              k+=1
+                              continue
+                          if raw.strip()=='':
+                              block.append('')
+                              k+=1
+                              continue
+                          if raw.startswith('        '):
+                              break
+                          block.append(raw)
+                          k+=1
+                      script='\n'.join(block)+'\n'
+                      break
+                  j+=1
+
+              if script is not None:
+                  steps.append((name,script))
+
+              i=j if j>i else i+1
+
+          targets=[
+              'Rebuild exact FIX8.7 source',
+              'Patch FIX8.9 Operazioni summary semantic colors'
+          ]
+
+          for target in targets:
+              for name,script in steps:
+                  if name==target:
+                      print('REPLAY:',target)
+                      subprocess.run(
+                          ['bash','-euo','pipefail','-c',script],
+                          check=True,
+                          env=os.environ.copy()
+                      )
+                      break
+              else:
+                  raise RuntimeError('Missing replay step: '+target)
+
+          print('FIX8.9 source reconstructed exactly')
+          PYREPLAY
+
+      - name: Verify FIX8.9 source before build
+        shell: bash
+        run: |
+          python3 - <<'PYCHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+
+          def req(c,m):
+              if not c:
+                  raise RuntimeError(m)
+              print('OK:',m)
+
+          req('versionCode 166' in g,'versionCode 166')
+          req(
+              'versionName "3.4.86-dev-fix10-fix8-9-operazioni-summary-semantic-colors"' in g,
+              'FIX8.9 versionName'
+          )
+          req(
+              'DEV 3.4.86 FIX10 FIX8.9 OPERAZIONI COLORS' in s,
+              'FIX8.9 visible label'
+          )
+          req(re.search(r'DB_VERSION\s*=\s*18',d) is not None,'DB18 unchanged')
+          req(
+              'Commissioni(?:\\\\s+[0-9]{4})?' in s,
+              'Commissioni YYYY semantic cost rule present'
+          )
+
+          for marker in [
+              'repairTradeRepublicPricesV3477',
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+              'applyHistoricalUiSafetyV3462',
+              'Performance = proventi lordi + P/L realizzato lordo.'
+          ]:
+              req(marker in s or marker in d,'preserved '+marker)
+
+          print('FIX8.9 source verified')
+          PYCHECK
+
+      - name: Clean previous build outputs
+        working-directory: android-project-v3460
+        run: rm -rf app/build build
+
+      - name: Build signed FIX8.9 FIX1 APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle clean assembleRelease --no-daemon
+
+      - name: Verify signed FIX8.9 FIX1 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -v 4 "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+
+          BADGING="$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK")"
+          echo "$BADGING"
+
+          echo "$BADGING" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "$BADGING" | grep -Fq "versionCode='166'"
+          echo "$BADGING" | grep -Fq "versionName='3.4.86-dev-fix10-fix8-9-operazioni-summary-semantic-colors'"
+
+          sha256sum "$APK"
+
+      - name: Prepare final FIX8.9 FIX1 APK
+        run: |
+          mkdir -p release
+          cp \
+            android-project-v3460/app/build/outputs/apk/release/app-release.apk \
+            release/Portafoglio2026-FIX8.9-FIX1-OPERAZIONI-COLORS.apk
+          sha256sum release/Portafoglio2026-FIX8.9-FIX1-OPERAZIONI-COLORS.apk
+
+      - name: Upload signed FIX8.9 FIX1 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3486-FIX10-FIX8-9-FIX1-OPERAZIONI-COLORS-SIGNED-APK
+          path: release/Portafoglio2026-FIX8.9-FIX1-OPERAZIONI-COLORS.apk
+          if-no-files-found: error
