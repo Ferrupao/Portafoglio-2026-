@@ -1,0 +1,954 @@
+name: Build Portafoglio 2026 V3.4.86 FIX10 FIX8.13 V171 Position Card Values
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/PORTAFOGLIO-2026-FIX8.13-V171-POSITION-CARD-VALUES.yml"
+      - ".github/workflows/PORTAFOGLIO-2026-FIX8.10-V168-COMMISSIONI-DIRECT.yml"
+      - ".github/workflows/FIX8.9-OPERAZIONI-SUMMARY-COLORS.yml"
+      - ".github/workflows/build-portafoglio-v3486-dev-fix10-fix8-7-clean-stable-rebuild.yml"
+      - "portafoglio-v3444-dev.zip"
+      - "portafoglio2026-v3413-release-ROTATED.p12.gpg"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify signing secrets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+          STORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PASSPHRASE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+      - name: Restore permanent signing key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PORTAFOGLIO_KEYSTORE_GPG_PASSPHRASE }}
+        run: |
+          gpg --quiet --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --output "$GITHUB_WORKSPACE/portafoglio2026-release.p12" \
+            --decrypt "$GITHUB_WORKSPACE/portafoglio2026-v3413-release-ROTATED.p12.gpg"
+          echo "b045f8e72ffa8d4be07b14cc572eecfcbee25b1f2a495250e1f6fa3865e28dd4  $GITHUB_WORKSPACE/portafoglio2026-release.p12" | sha256sum -c -
+          chmod 600 "$GITHUB_WORKSPACE/portafoglio2026-release.p12"
+
+      - name: Rebuild exact FIX8.10 source
+        shell: bash
+        run: |
+          python3 - <<'PYREPLAY'
+          from pathlib import Path
+          import os, subprocess
+
+          wf=Path('.github/workflows/PORTAFOGLIO-2026-FIX8.10-V168-COMMISSIONI-DIRECT.yml')
+          if not wf.exists():
+              raise RuntimeError('Missing FIX8.10 workflow')
+
+          lines=wf.read_text(encoding='utf-8').splitlines()
+          steps=[]
+          i=0
+          while i<len(lines):
+              if not lines[i].startswith('      - name: '):
+                  i+=1
+                  continue
+              name=lines[i][len('      - name: '):].strip()
+              j=i+1
+              script=None
+              while j<len(lines) and not lines[j].startswith('      - name: '):
+                  if lines[j]=='        run: |':
+                      k=j+1
+                      block=[]
+                      while k<len(lines):
+                          raw=lines[k]
+                          if raw.startswith('      - name: '):
+                              break
+                          if raw.startswith('          '):
+                              block.append(raw[10:])
+                              k+=1
+                              continue
+                          if raw.strip()=='':
+                              block.append('')
+                              k+=1
+                              continue
+                          if raw.startswith('        '):
+                              break
+                          block.append(raw)
+                          k+=1
+                      script='\n'.join(block)+'\n'
+                      break
+                  j+=1
+              if script is not None:
+                  steps.append((name,script))
+              i=j if j>i else i+1
+
+          for target in [
+              'Rebuild exact FIX8.9 source',
+              'Patch FIX8.10 direct Commissioni annual row'
+          ]:
+              for name,script in steps:
+                  if name==target:
+                      subprocess.run(
+                          ['bash','-euo','pipefail','-c',script],
+                          check=True,
+                          env=os.environ.copy()
+                      )
+                      break
+              else:
+                  raise RuntimeError('Missing replay step: '+target)
+
+          print('FIX8.10 source reconstructed')
+          PYREPLAY
+
+      - name: Patch FIX8.11 classified own-capital green
+        shell: bash
+        run: |
+          python3 - <<'PYFIX'
+          from pathlib import Path
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+
+          def req(c,m):
+              if not c: raise RuntimeError(m)
+              print('OK:',m)
+
+          def matching_brace(text,open_pos):
+              depth=0
+              ins=inc=esc=line=block=False
+              i=open_pos
+              while i<len(text):
+                  c=text[i]; n=text[i+1] if i+1<len(text) else ''
+                  if line:
+                      if c=='\n': line=False
+                      i+=1; continue
+                  if block:
+                      if c=='*' and n=='/': block=False; i+=2; continue
+                      i+=1; continue
+                  if ins:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=='"': ins=False
+                      i+=1; continue
+                  if inc:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=="'": inc=False
+                      i+=1; continue
+                  if c=='/' and n=='/': line=True; i+=2; continue
+                  if c=='/' and n=='*': block=True; i+=2; continue
+                  if c=='"': ins=True; i+=1; continue
+                  if c=="'": inc=True; i+=1; continue
+                  if c=='{': depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0:return i
+                  i+=1
+              raise RuntimeError('Unbalanced braces')
+
+          def replace_method(text,signature,replacement):
+              p=text.find(signature)
+              if p<0: raise RuntimeError('Method not found: '+signature)
+              o=text.find('{',p)
+              c=matching_brace(text,o)
+              return text[:p]+replacement+text[c+1:]
+
+          req('versionCode 168' in gradle,'FIX8.10 versionCode')
+          req('styleCommissioniAnnualDirectV3500(t);' in main,'FIX8.10 commission hook')
+
+          gradle=gradle.replace('versionCode 168','versionCode 169',1)
+          gradle=gradle.replace(
+              'versionName "3.4.86-dev-fix10-fix8-10-v168-commissioni-direct"',
+              'versionName "3.4.86-dev-fix10-fix8-11-v169-classificati-green"',
+              1
+          )
+          main=main.replace(
+              'DEV 3.4.86 FIX10 FIX8.10 V168 COMMISSIONI DIRECT',
+              'DEV 3.4.86 FIX10 FIX8.11 V169 CLASSIFICATI GREEN',
+              1
+          )
+
+          helper=r'''
+              void styleClassifiedOwnCapitalDirectV3501(android.widget.TextView t){
+                  if(t==null)return;
+                  if(t instanceof android.widget.EditText)return;
+                  if(t instanceof android.widget.Button)return;
+
+                  CharSequence q=t.getText();
+                  if(q==null)return;
+                  String s=q.toString();
+                  if(s.trim().isEmpty())return;
+
+                  android.text.SpannableString sp=new android.text.SpannableString(q);
+                  boolean changed=false;
+
+                  String[] patterns=new String[]{
+                      "(?i)(Round\\s+up\\s*/\\s*capitale\\s+proprio\\s*:\\s*)([+\\-]?[0-9][0-9\\.,]*)\\s*(€)",
+                      "(?i)(Round\\s+up\\s*•\\s*CAPITALE\\s+PROPRIO\\s*•\\s*)([+\\-]?[0-9][0-9\\.,]*)\\s*(€)"
+                  };
+
+                  for(String regex:patterns){
+                      java.util.regex.Matcher m=java.util.regex.Pattern.compile(regex).matcher(s);
+                      while(m.find()){
+                          double n=parseSemanticNumberV3483(m.group(2));
+                          int color=Math.abs(n)<=0.0000001
+                              ?android.graphics.Color.WHITE
+                              :(n>0?C_GREEN:C_RED);
+
+                          sp.setSpan(
+                              new android.text.style.ForegroundColorSpan(color),
+                              m.start(2),m.end(3),
+                              android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                          );
+                          sp.setSpan(
+                              new android.text.style.StyleSpan(android.graphics.Typeface.BOLD),
+                              m.start(2),m.end(3),
+                              android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                          );
+                          changed=true;
+                      }
+                  }
+
+                  if(!changed)return;
+                  t.setText(sp);
+                  t.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);
+              }
+          '''
+
+          req('styleClassifiedOwnCapitalDirectV3501' not in main,'FIX8.11 helper new')
+          last=main.rfind('}')
+          req(last>=0,'MainActivity closing brace')
+          main=main[:last]+'\n'+helper+'\n'+main[last:]
+
+          replacement=r'''void styleGlobalSemanticTextV3483(android.widget.TextView t){
+                  if(t==null)return;
+                  styleDeterministicScreenTextV3492(t);
+                  styleMovimentiStoricoTextV3499(t);
+                  styleCommissioniAnnualDirectV3500(t);
+                  styleClassifiedOwnCapitalDirectV3501(t);
+              }'''
+
+          main=replace_method(
+              main,
+              'void styleGlobalSemanticTextV3483(android.widget.TextView t)',
+              replacement
+          )
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          if db_path.read_bytes()!=db_before:
+              raise RuntimeError('DbHelper changed unexpectedly')
+
+          print('FIX8.11 applied')
+          PYFIX
+
+
+      - name: Patch FIX8.12 Dashboard and Storico semantic colors
+        shell: bash
+        run: |
+          python3 - <<'PYFIX812'
+          from pathlib import Path
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+
+          def req(c,m):
+              if not c:
+                  raise RuntimeError(m)
+              print('OK:',m)
+
+          def matching_brace(text,open_pos):
+              depth=0
+              ins=inc=esc=line=block=False
+              i=open_pos
+              while i<len(text):
+                  c=text[i]
+                  n=text[i+1] if i+1<len(text) else ''
+                  if line:
+                      if c=='\n': line=False
+                      i+=1; continue
+                  if block:
+                      if c=='*' and n=='/':
+                          block=False; i+=2; continue
+                      i+=1; continue
+                  if ins:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=='\"': ins=False
+                      i+=1; continue
+                  if inc:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=="'": inc=False
+                      i+=1; continue
+                  if c=='/' and n=='/':
+                      line=True; i+=2; continue
+                  if c=='/' and n=='*':
+                      block=True; i+=2; continue
+                  if c=='\"':
+                      ins=True; i+=1; continue
+                  if c=="'":
+                      inc=True; i+=1; continue
+                  if c=='{':
+                      depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0:
+                          return i
+                  i+=1
+              raise RuntimeError('Unbalanced braces')
+
+          def replace_method(text,signature,replacement):
+              p=text.find(signature)
+              if p<0:
+                  raise RuntimeError('Method not found: '+signature)
+              o=text.find('{',p)
+              c=matching_brace(text,o)
+              return text[:p]+replacement+text[c+1:]
+
+          req('versionCode 169' in gradle,'FIX8.11 versionCode 169')
+          req('versionName \"3.4.86-dev-fix10-fix8-11-v169-classificati-green\"' in gradle,'FIX8.11 versionName')
+          req('styleClassifiedOwnCapitalDirectV3501(t);' in main,'FIX8.11 classified colors preserved')
+
+          gradle=gradle.replace('versionCode 169','versionCode 170',1)
+          gradle=gradle.replace(
+              'versionName \"3.4.86-dev-fix10-fix8-11-v169-classificati-green\"',
+              'versionName \"3.4.86-dev-fix10-fix8-12-fix7-v170-dashboard-storico-colors\"',
+              1
+          )
+          main=main.replace(
+              'DEV 3.4.86 FIX10 FIX8.11 V169 CLASSIFICATI GREEN',
+              'DEV 3.4.86 FIX10 FIX8.12 FIX7 V170 DASHBOARD STORICO COLORS',
+              1
+          )
+
+          helpers=r'''
+              void styleHistoryMonthlyDirectV3502(android.widget.TextView t){
+                  if(t==null)return;
+                  if(t instanceof android.widget.EditText)return;
+                  if(t instanceof android.widget.Button)return;
+
+                  String sc=currentColorScreenV3492==null
+                      ?""
+                      :currentColorScreenV3492.toLowerCase(java.util.Locale.ROOT);
+                  if(!sc.contains("storico"))return;
+
+                  CharSequence q=t.getText();
+                  if(q==null)return;
+                  String s=q.toString();
+                  String low=s.toLowerCase(java.util.Locale.ROOT);
+
+                  if(!(low.contains("lordo:")
+                      ||low.contains("netto:")
+                      ||low.contains("ritenute fiscali mese")
+                      ||low.contains("rendimento:")))return;
+
+                  android.text.SpannableString sp=new android.text.SpannableString(q);
+
+                  String[] signedPatterns=new String[]{
+                      "(?i)(Lordo\\s*:\\s*)([+\\-]?[0-9][0-9\\.,]*)\\s*(€)",
+                      "(?i)(Netto\\s*:\\s*)([+\\-]?[0-9][0-9\\.,]*)\\s*(€)",
+                      "(?i)(Rendimento\\s*:\\s*)([+\\-]?[0-9][0-9\\.,]*)\\s*(%)"
+                  };
+
+                  for(String regex:signedPatterns){
+                      java.util.regex.Matcher m=java.util.regex.Pattern.compile(regex).matcher(s);
+                      while(m.find()){
+                          double n=parseSemanticNumberV3483(m.group(2));
+                          int color=semanticSignedColorV3483(n);
+                          sp.setSpan(new android.text.style.ForegroundColorSpan(color),m.start(2),m.end(3),android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                          sp.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD),m.start(2),m.end(3),android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                      }
+                  }
+
+                  java.util.regex.Matcher tax=java.util.regex.Pattern.compile(
+                      "(?i)(Ritenute\\s+fiscali\\s+mese\\s*:\\s*)([+\\-]?[0-9][0-9\\.,]*)\\s*(€)"
+                  ).matcher(s);
+
+                  while(tax.find()){
+                      double n=parseSemanticNumberV3483(tax.group(2));
+                      int color=Math.abs(n)<=0.0000001?android.graphics.Color.WHITE:C_RED;
+                      sp.setSpan(new android.text.style.ForegroundColorSpan(color),tax.start(2),tax.end(3),android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                      sp.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD),tax.start(2),tax.end(3),android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                  }
+
+                  t.setText(sp);
+                  t.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);
+              }
+
+              void styleFix812DashboardGroupV3502(android.view.ViewGroup g){
+                  if(g==null)return;
+                  String sc=currentColorScreenV3492==null
+                      ?""
+                      :currentColorScreenV3492.trim().toLowerCase(java.util.Locale.ROOT);
+                  if(!sc.equals("dashboard"))return;
+                  java.util.ArrayList<android.widget.TextView> all=new java.util.ArrayList<>();
+                  collectLocalKpiTextV3489(g,all);
+                  if(all.size()<2||all.size()>8)return;
+
+                  StringBuilder labels=new StringBuilder();
+                  java.util.ArrayList<android.widget.TextView> values=new java.util.ArrayList<>();
+                  for(android.widget.TextView tv:all){
+                      if(tv==null||tv.getText()==null)continue;
+                      String x=tv.getText().toString().trim();
+                      if(x.isEmpty())continue;
+                      if(x.matches("[+\\-]?[0-9][0-9\\.,]*\\s*(€|%)?")){
+                          values.add(tv);
+                      }else{
+                          if(labels.length()>0)labels.append(" " );
+                          labels.append(x);
+                      }
+                  }
+                  if(values.isEmpty())return;
+
+                  String low=labels.toString().toLowerCase(java.util.Locale.ROOT).replace('\n',' ').replaceAll("\\s+"," " ).trim();
+                  boolean net=low.contains("netto noto proventi");
+                  boolean tax=low.contains("tasse registrate");
+                  boolean comm=low.matches(".*commissioni\\s+[0-9]{4}.*");
+                  boolean other=low.matches(".*altri\\s+costi\\s+fiscali\\s+[0-9]{4}.*");
+                  int hits=(net?1:0)+(tax?1:0)+(comm?1:0)+(other?1:0);
+                  if(hits!=1)return;
+
+                  for(android.widget.TextView tv:values){
+                      double n=parseSemanticNumberV3483(tv.getText().toString());
+                      int color=net?semanticSignedColorV3483(n):(Math.abs(n)<=0.0000001?android.graphics.Color.WHITE:C_RED);
+                      tv.setTextColor(color);
+                      tv.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);
+                  }
+              }
+
+
+              void styleFix812DashboardTextV3502(android.widget.TextView t){
+                  if(t==null)return;
+                  if(t instanceof android.widget.EditText)return;
+                  if(t instanceof android.widget.Button)return;
+                  if(t.getText()==null)return;
+
+                  String sc=currentColorScreenV3492==null
+                      ?""
+                      :currentColorScreenV3492.trim().toLowerCase(java.util.Locale.ROOT);
+                  if(!sc.equals("dashboard"))return;
+
+                  String s=t.getText().toString();
+                  if(s.trim().isEmpty())return;
+
+                  android.text.SpannableString sp=new android.text.SpannableString(s);
+                  boolean changed=false;
+
+                  java.util.regex.Matcher dashIncomeV3502=java.util.regex.Pattern.compile(
+                      "(?i)(Netto\\s+noto\\s+proventi\\s*:?\\s*)([+\\-]?[0-9][0-9\\.,]*)\\s*(€)"
+                  ).matcher(s);
+                  while(dashIncomeV3502.find()){
+                      double n=parseSemanticNumberV3483(dashIncomeV3502.group(2));
+                      semanticAmountSpanV3483(
+                          sp,
+                          dashIncomeV3502.start(2),
+                          dashIncomeV3502.end(3),
+                          semanticSignedColorV3483(n)
+                      );
+                      changed=true;
+                  }
+
+                  java.util.regex.Matcher dashCostV3502=java.util.regex.Pattern.compile(
+                      "(?i)(Tasse\\s+registrate|Commissioni\\s+[0-9]{4}|Altri\\s+costi\\s+fiscali\\s+[0-9]{4})\\s*:?\\s*([+\\-]?[0-9][0-9\\.,]*)\\s*(€)"
+                  ).matcher(s);
+                  while(dashCostV3502.find()){
+                      double n=parseSemanticNumberV3483(dashCostV3502.group(2));
+                      int color=Math.abs(n)<=0.0000001
+                          ?android.graphics.Color.WHITE
+                          :C_RED;
+                      semanticAmountSpanV3483(
+                          sp,
+                          dashCostV3502.start(2),
+                          dashCostV3502.end(3),
+                          color
+                      );
+                      changed=true;
+                  }
+
+                  java.util.regex.Matcher wealthPctV3502=java.util.regex.Pattern.compile(
+                      "(?i)(Inizio\\s+[0-9][0-9\\.,]*\\s*€\\s*•\\s*Attuale\\s+[0-9][0-9\\.,]*\\s*€\\s*•\\s*)([+\\-]?[0-9][0-9\\.,]*)\\s*(%)"
+                  ).matcher(s);
+                  while(wealthPctV3502.find()){
+                      double n=parseSemanticNumberV3483(wealthPctV3502.group(2));
+                      semanticAmountSpanV3483(
+                          sp,
+                          wealthPctV3502.start(2),
+                          wealthPctV3502.end(3),
+                          semanticSignedColorV3483(n)
+                      );
+                      changed=true;
+                  }
+
+                  if(changed){
+                      t.setText(sp);
+                      t.setTypeface(
+                          android.graphics.Typeface.DEFAULT,
+                          android.graphics.Typeface.BOLD
+                      );
+                  }
+              }
+
+              void applyFix812DashboardColorsV3502(android.view.View v){
+                  if(v==null)return;
+
+                  if(v instanceof android.widget.TextView){
+                      styleFix812DashboardTextV3502((android.widget.TextView)v);
+                      return;
+                  }
+
+                  if(v instanceof android.view.ViewGroup){
+                      android.view.ViewGroup g=(android.view.ViewGroup)v;
+                      styleFix812DashboardGroupV3502(g);
+                      for(int i=0;i<g.getChildCount();i++){
+                          applyFix812DashboardColorsV3502(g.getChildAt(i));
+                      }
+                  }
+              }
+          '''
+
+          req('styleHistoryMonthlyDirectV3502' not in main,'FIX8.12 helpers new')
+          last=main.rfind('}')
+          req(last>=0,'MainActivity closing brace')
+          main=main[:last]+'\n'+helpers+'\n'+main[last:]
+
+          global_replacement=r'''void styleGlobalSemanticTextV3483(android.widget.TextView t){
+                  if(t==null)return;
+                  styleDeterministicScreenTextV3492(t);
+                  styleMovimentiStoricoTextV3499(t);
+                  styleCommissioniAnnualDirectV3500(t);
+                  styleClassifiedOwnCapitalDirectV3501(t);
+                  styleHistoryMonthlyDirectV3502(t);
+                  styleFix812DashboardTextV3502(t);
+              }'''
+          main=replace_method(main,'void styleGlobalSemanticTextV3483(android.widget.TextView t)',global_replacement)
+
+          group_anchor='styleSemanticKpiGroupV3486Fix7(g);'
+          req(group_anchor in main,'global KPI group hook found')
+          hook=group_anchor+'\n                      styleFix812DashboardGroupV3502(g);'
+          req(hook not in main,'FIX8.12 global KPI hook new')
+          main=main.replace(
+              group_anchor,
+              hook,
+              1
+          )
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+          if db_path.read_bytes()!=db_before:
+              raise RuntimeError('DbHelper changed unexpectedly')
+          print('FIX8.12 applied')
+          PYFIX812
+
+      - name: Verify FIX8.12 FIX7 V170 source
+        shell: bash
+        run: |
+          python3 - <<'PYCHECK'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+
+          def req(c,m):
+              if not c: raise RuntimeError(m)
+              print('OK:',m)
+
+          req('versionCode 170' in g,'versionCode 170')
+          req('versionName \"3.4.86-dev-fix10-fix8-12-fix7-v170-dashboard-storico-colors\"' in g,'FIX8.12 versionName')
+          req('DEV 3.4.86 FIX10 FIX8.12 FIX7 V170 DASHBOARD STORICO COLORS' in s,'visible label')
+          req(re.search(r'DB_VERSION\s*=\s*18',d) is not None,'DB18 unchanged')
+          req(re.search(r'(?m)^\s*\\n\s*$',s) is None,'no standalone literal escaped newline')
+          req('\\n}' not in s,'no literal escaped newline before class close')
+
+          for marker in [
+              'styleHistoryMonthlyDirectV3502(t);',
+              'styleFix812DashboardTextV3502(t);',
+              'styleFix812DashboardGroupV3502(g);',
+              'dashIncomeV3502','dashCostV3502','wealthPctV3502',
+              'Ritenute\\\\s+fiscali\\\\s+mese',
+              'Tasse\\\\s+registrate',
+              'Altri\\\\s+costi\\\\s+fiscali',
+              'Netto\\\\s+noto\\\\s+proventi'
+          ]:
+              req(marker in s,'FIX8.12 marker '+marker)
+
+          for marker in [
+              'styleClassifiedOwnCapitalDirectV3501(t);',
+              'styleCommissioniAnnualDirectV3500(t);',
+              'styleMovimentiStoricoTextV3499(t);',
+              'compositionIncomeV3497',
+              'if(sc.contains(\"performance\"))return false;',
+              'repairTradeRepublicPricesV3477',
+              'positions_archive_before_delete_v3464',
+              'positions_block_tr_placeholder14_v3464',
+              'repairTradeRepublicPlaceholderPricesV3464',
+              'repairInvalidCapitalGainTaxesV3470Fix2',
+              'applyHistoricalUiSafetyV3462',
+              'Performance = proventi lordi + P/L realizzato lordo.'
+          ]:
+              req(marker in s or marker in d,'preserved '+marker)
+
+          print('FIX8.12 FIX7 V170 source verified')
+          PYCHECK
+
+
+      - name: Patch FIX8.13 position card current values
+        shell: bash
+        run: |
+          python3 - <<'PYFIX813'
+          from pathlib import Path
+
+          root=Path('android-project-v3460')
+          main_path=root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java'
+          db_path=root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java'
+          gradle_path=root/'app/build.gradle'
+
+          main=main_path.read_text(encoding='utf-8')
+          gradle=gradle_path.read_text(encoding='utf-8')
+          db_before=db_path.read_bytes()
+
+          def req(c,m):
+              if not c:
+                  raise RuntimeError(m)
+              print('OK:',m)
+
+          def matching_brace(text,open_pos):
+              depth=0
+              ins=inc=esc=line=block=False
+              i=open_pos
+              while i<len(text):
+                  c=text[i]
+                  n=text[i+1] if i+1<len(text) else ''
+                  if line:
+                      if c=='\n': line=False
+                      i+=1; continue
+                  if block:
+                      if c=='*' and n=='/':
+                          block=False; i+=2; continue
+                      i+=1; continue
+                  if ins:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=='"': ins=False
+                      i+=1; continue
+                  if inc:
+                      if esc: esc=False
+                      elif c=='\\': esc=True
+                      elif c=="'": inc=False
+                      i+=1; continue
+                  if c=='/' and n=='/':
+                      line=True; i+=2; continue
+                  if c=='/' and n=='*':
+                      block=True; i+=2; continue
+                  if c=='"':
+                      ins=True; i+=1; continue
+                  if c=="'":
+                      inc=True; i+=1; continue
+                  if c=='{':
+                      depth+=1
+                  elif c=='}':
+                      depth-=1
+                      if depth==0:
+                          return i
+                  i+=1
+              raise RuntimeError('Unbalanced braces')
+
+          def replace_method(text,signature,replacement):
+              p=text.find(signature)
+              req(p>=0,'method found '+signature)
+              b=text.find('{',p)
+              req(b>=0,'method brace '+signature)
+              e=matching_brace(text,b)
+              return text[:p]+replacement+text[e+1:]
+
+          req('versionCode 170' in gradle,'FIX8.12 versionCode 170')
+          req('3.4.86-dev-fix10-fix8-12-fix7-v170-dashboard-storico-colors' in gradle,'FIX8.12 versionName')
+          req('DEV 3.4.86 FIX10 FIX8.12 FIX7 V170 DASHBOARD STORICO COLORS' in main,'FIX8.12 visible label')
+          req('styleFix813PositionValueTextV3503' not in main,'FIX8.13 helpers new')
+
+          gradle=gradle.replace('versionCode 170','versionCode 171',1)
+          gradle=gradle.replace(
+              'versionName "3.4.86-dev-fix10-fix8-12-fix7-v170-dashboard-storico-colors"',
+              'versionName "3.4.86-dev-fix10-fix8-13-v171-position-card-values"',
+              1
+          )
+          main=main.replace(
+              'DEV 3.4.86 FIX10 FIX8.12 FIX7 V170 DASHBOARD STORICO COLORS',
+              'DEV 3.4.86 FIX10 FIX8.13 V171 POSITION CARD VALUES',
+              1
+          )
+
+          helpers=r'''
+              void styleFix813PositionValueTextV3503(android.widget.TextView t){
+                  if(t==null)return;
+                  if(t instanceof android.widget.EditText)return;
+                  if(t instanceof android.widget.Button)return;
+
+                  String sc=currentColorScreenV3492==null
+                      ?""
+                      :currentColorScreenV3492.trim().toLowerCase(java.util.Locale.ROOT);
+
+                  if(!(sc.contains("posizioni")||sc.contains("cerca titolo")))return;
+
+                  CharSequence q=t.getText();
+                  if(q==null)return;
+                  String s=q.toString().trim();
+
+                  java.util.regex.Matcher m=java.util.regex.Pattern.compile(
+                      "^([+\\-]?[0-9][0-9\\.,]*)\\s*(€)$"
+                  ).matcher(s);
+                  if(!m.matches())return;
+
+                  double n=parseSemanticNumberV3483(m.group(1));
+                  int color=n>0?C_GREEN:(n<0?C_RED:android.graphics.Color.WHITE);
+                  t.setTextColor(color);
+                  t.setTypeface(
+                      android.graphics.Typeface.DEFAULT,
+                      android.graphics.Typeface.BOLD
+                  );
+              }
+
+              void styleFix813DashboardPositionGroupV3503(android.view.ViewGroup g){
+                  if(g==null)return;
+
+                  String sc=currentColorScreenV3492==null
+                      ?""
+                      :currentColorScreenV3492.trim().toLowerCase(java.util.Locale.ROOT);
+                  if(!sc.equals("dashboard"))return;
+
+                  java.util.ArrayList<android.widget.TextView> all=
+                      new java.util.ArrayList<android.widget.TextView>();
+                  collectLocalKpiTextV3489(g,all);
+
+                  if(all.size()<2||all.size()>4)return;
+
+                  java.util.ArrayList<android.widget.TextView> vals=
+                      new java.util.ArrayList<android.widget.TextView>();
+                  StringBuilder labels=new StringBuilder();
+
+                  for(android.widget.TextView t:all){
+                      if(t==null||t.getText()==null)continue;
+                      String s=t.getText().toString().trim();
+                      if(s.matches("[+\\-]?[0-9][0-9\\.,]*\\s*€")){
+                          vals.add(t);
+                      }else{
+                          if(labels.length()>0)labels.append(" ");
+                          labels.append(s.toLowerCase(java.util.Locale.ROOT));
+                      }
+                  }
+
+                  if(vals.size()!=1)return;
+
+                  String lab=labels.toString().trim();
+                  if(lab.length()<3)return;
+
+                  String[] excluded=new String[]{
+                      "netto noto proventi",
+                      "tasse registrate",
+                      "commissioni",
+                      "altri costi fiscali",
+                      "ritenute",
+                      "tobin",
+                      "plusvalenza",
+                      "minusvalenza",
+                      "p/l",
+                      "valore attuale titoli",
+                      "patrimonio",
+                      "liquidità",
+                      "proventi netti",
+                      "rendimento",
+                      "performance",
+                      "totale"
+                  };
+                  for(String x:excluded){
+                      if(lab.contains(x))return;
+                  }
+
+                  android.widget.TextView v=vals.get(0);
+                  String s=v.getText().toString().trim();
+                  java.util.regex.Matcher m=java.util.regex.Pattern.compile(
+                      "^([+\\-]?[0-9][0-9\\.,]*)\\s*(€)$"
+                  ).matcher(s);
+                  if(!m.matches())return;
+
+                  double n=parseSemanticNumberV3483(m.group(1));
+                  int color=n>0?C_GREEN:(n<0?C_RED:android.graphics.Color.WHITE);
+                  v.setTextColor(color);
+                  v.setTypeface(
+                      android.graphics.Typeface.DEFAULT,
+                      android.graphics.Typeface.BOLD
+                  );
+              }
+          '''
+
+          last=main.rfind('}')
+          req(last>=0,'MainActivity closing brace')
+          main=main[:last]+'\n'+helpers+'\n'+main[last:]
+
+          global_replacement=r'''void styleGlobalSemanticTextV3483(android.widget.TextView t){
+                  if(t==null)return;
+                  styleDeterministicScreenTextV3492(t);
+                  styleMovimentiStoricoTextV3499(t);
+                  styleCommissioniAnnualDirectV3500(t);
+                  styleClassifiedOwnCapitalDirectV3501(t);
+                  styleHistoryMonthlyDirectV3502(t);
+                  styleFix812DashboardTextV3502(t);
+                  styleFix813PositionValueTextV3503(t);
+              }'''
+          main=replace_method(
+              main,
+              'void styleGlobalSemanticTextV3483(android.widget.TextView t)',
+              global_replacement
+          )
+
+          anchor_group='styleFix812DashboardGroupV3502(g);'
+          req(anchor_group in main,'FIX8.12 dashboard group hook found')
+          hook=anchor_group+'\n                      styleFix813DashboardPositionGroupV3503(g);'
+          req(hook not in main,'FIX8.13 dashboard positions hook new')
+          main=main.replace(anchor_group,hook,1)
+
+          main_path.write_text(main,encoding='utf-8')
+          gradle_path.write_text(gradle,encoding='utf-8')
+
+          if db_path.read_bytes()!=db_before:
+              raise RuntimeError('DbHelper changed unexpectedly')
+
+          print('FIX8.13 applied')
+          PYFIX813
+
+      - name: Verify FIX8.13 V171 source
+        shell: bash
+        run: |
+          python3 - <<'PYCHECK813'
+          from pathlib import Path
+          import re
+
+          root=Path('android-project-v3460')
+          s=(root/'app/src/main/java/it/portafoglio2026/v3/MainActivity.java').read_text(encoding='utf-8')
+          d=(root/'app/src/main/java/it/portafoglio2026/v3/DbHelper.java').read_text(encoding='utf-8')
+          g=(root/'app/build.gradle').read_text(encoding='utf-8')
+
+          def req(c,m):
+              if not c:
+                  raise RuntimeError(m)
+              print('OK:',m)
+
+          req('versionCode 171' in g,'versionCode 171')
+          req(
+              'versionName "3.4.86-dev-fix10-fix8-13-v171-position-card-values"' in g,
+              'FIX8.13 versionName'
+          )
+          req(
+              'DEV 3.4.86 FIX10 FIX8.13 V171 POSITION CARD VALUES' in s,
+              'visible label'
+          )
+          req(re.search(r'DB_VERSION\s*=\s*18',d) is not None,'DB18 unchanged')
+
+          for marker in [
+              'styleFix813PositionValueTextV3503(t);',
+              'styleFix813DashboardPositionGroupV3503(g);',
+              'styleFix812DashboardTextV3502(t);',
+              'styleFix812DashboardGroupV3502(g);',
+              'styleHistoryMonthlyDirectV3502(t);',
+              'styleClassifiedOwnCapitalDirectV3501(t);',
+              'styleCommissioniAnnualDirectV3500(t);'
+          ]:
+              req(marker in s,'preserved/added '+marker)
+
+          req(
+              re.search(r'(?m)^\s*\\n\s*$',s) is None,
+              'no standalone literal escaped newline'
+          )
+          req('\\n}' not in s,'no literal escaped newline before class close')
+
+          print('FIX8.13 V171 source verified')
+          PYCHECK813
+
+
+      - name: Clean previous build outputs
+        working-directory: android-project-v3460
+        run: rm -rf app/build build
+
+      - name: Build signed FIX8.13 V171 APK
+        working-directory: android-project-v3460
+        env:
+          PORTAFOGLIO_KEYSTORE_FILE: ${{ github.workspace }}/portafoglio2026-release.p12
+          PORTAFOGLIO_KEYSTORE_PASSWORD: ${{ secrets.PORTAFOGLIO_KEYSTORE_PASSWORD }}
+          PORTAFOGLIO_KEY_ALIAS: ${{ secrets.PORTAFOGLIO_KEY_ALIAS }}
+          PORTAFOGLIO_KEY_PASSWORD: ${{ secrets.PORTAFOGLIO_KEY_PASSWORD }}
+        run: gradle clean assembleRelease --no-daemon
+
+      - name: Verify signed FIX8.13 V171 APK
+        run: |
+          APK="android-project-v3460/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -v 4 "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          BADGING="$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK")"
+          echo "$BADGING"
+          echo "$BADGING" | grep -Fq "package: name='it.portafoglio2026.v32'"
+          echo "$BADGING" | grep -Fq "versionCode='170'"
+          echo "$BADGING" | grep -Fq "versionName='3.4.86-dev-fix10-fix8-12-fix7-v170-dashboard-storico-colors'"
+          sha256sum "$APK"
+
+      - name: Prepare final FIX8.13 V171 APK
+        run: |
+          mkdir -p release
+          cp \
+            android-project-v3460/app/build/outputs/apk/release/app-release.apk \
+            release/Portafoglio2026-FIX8.13-V171-POSITION-CARD-VALUES.apk
+          sha256sum release/Portafoglio2026-FIX8.13-V171-POSITION-CARD-VALUES.apk
+
+      - name: Upload signed FIX8.13 V171 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Portafoglio2026-V3486-FIX10-FIX8-13-V171-POSITION-CARD-VALUES-SIGNED-APK
+          path: release/Portafoglio2026-FIX8.13-V171-POSITION-CARD-VALUES.apk
+          if-no-files-found: error
